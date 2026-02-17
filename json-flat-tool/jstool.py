@@ -23,6 +23,7 @@ Paths:
 
 import copy as _copy
 import difflib
+import fnmatch
 import json
 import re
 import sys
@@ -292,6 +293,55 @@ def cmd_view(data: Any, schema: bool = False,
         shown_end   = offset + len(rows)
         line = f"── showing rows {shown_start}–{shown_end} of {total}{elem_footer} ──"
         print(f"{C_DIM}{line}{C_RESET}")
+
+
+# ── Find ───────────────────────────────────────────────────────────────────────
+def cmd_find(data: Any, pattern: str,
+             key_only: bool = False, val_only: bool = False,
+             case_insensitive: bool = False, glob_mode: bool = False):
+    """
+    Search flattened rows by path and/or value.
+    Modes:
+      default  — match path OR value
+      -k       — match path only
+      -v       — match value only
+    Pattern:
+      default  — Python regex (re.search)
+      -g       — glob/wildcard (fnmatch: * = any chars, ? = one char)
+    """
+    rows = infer_nulls(flatten(data))
+
+    if glob_mode:
+        def matches(text: str) -> bool:
+            t, p = (text.lower(), pattern.lower()) if case_insensitive else (text, pattern)
+            return fnmatch.fnmatch(t, p)
+    else:
+        re_flags = re.IGNORECASE if case_insensitive else 0
+        try:
+            compiled = re.compile(pattern, re_flags)
+        except re.error as e:
+            print(f"{C_DEL}Invalid regex: {e}{C_RESET}", file=sys.stderr)
+            sys.exit(1)
+        def matches(text: str) -> bool:
+            return bool(compiled.search(text))
+
+    found = 0
+    for path, type_name, val_marker in rows:
+        val_str = "" if val_marker is None or val_marker in ("(empty)",) else str(val_marker)
+        hit_key = matches(path)
+        if key_only:
+            hit = hit_key
+        elif val_only:
+            hit = bool(val_str) and matches(val_str)
+        else:
+            hit = hit_key or (bool(val_str) and matches(val_str))
+
+        if hit:
+            print_row(path, type_name, val_marker)
+            found += 1
+
+    if found == 0:
+        print(f"{C_DIM}(no matches){C_RESET}")
 
 
 # ── Path parser ────────────────────────────────────────────────────────────────
@@ -1004,7 +1054,7 @@ def emit_result(data: Any, filepath: Optional[str], force: bool):
 
 
 # ── Fuzzy command suggestion ───────────────────────────────────────────────────
-COMMANDS = ["view", "schema", "set", "before", "after", "del", "set-null", "copy", "merge", "help"]
+COMMANDS = ["view", "schema", "find", "set", "before", "after", "del", "set-null", "copy", "merge", "help"]
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -1168,6 +1218,25 @@ def main():
         file_arg = positional[0] if positional else None
         data, _ = read_json(file_arg)
         cmd_schema(data, title)
+
+    # ── find ──────────────────────────────────────────────────────────────────
+    elif cmd == "find":
+        if not rest:
+            print("Usage: jstool find <pattern> [file] [-k] [-v] [-i] [-g]")
+            sys.exit(1)
+        key_only  = pop_flag(rest, "-k")
+        val_only  = pop_flag(rest, "-v")
+        case_ins  = pop_flag(rest, "-i")
+        glob_mode = pop_flag(rest, "-g")
+        if key_only and val_only:
+            print("Error: -k and -v are mutually exclusive")
+            sys.exit(1)
+        pattern  = rest[0]
+        file_arg = rest[1] if len(rest) > 1 else None
+        data, _  = read_json(file_arg)
+        cmd_find(data, pattern,
+                 key_only=key_only, val_only=val_only,
+                 case_insensitive=case_ins, glob_mode=glob_mode)
 
     # ── set ───────────────────────────────────────────────────────────────────
     elif cmd == "set":

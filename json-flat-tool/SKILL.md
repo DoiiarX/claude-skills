@@ -29,6 +29,7 @@ python3 ~/.claude/skills/json-flat-tool/jstool.py <command> [args]
 | `set-null <path> [file] [-f]` | Set a field to null |
 | `copy <src> <dst> [file] [-f]` | Deep-clone a subtree to a new path |
 | `merge <path> <patch.json> [file] [-f]` | Deep-merge a JSON file into a path |
+| `find <pattern> [file] [opts]` | Search paths and values by regex or glob |
 
 Omit `[file]` to read from stdin.
 
@@ -158,6 +159,34 @@ python3 ~/.claude/skills/json-flat-tool/jstool.py merge provider.google.models /
 python3 ~/.claude/skills/json-flat-tool/jstool.py merge provider.google.models /tmp/new-models.json config.json -f
 ```
 
+### Find nodes by pattern (`find`)
+
+```bash
+# Regex search in both paths and values (default)
+python3 ~/.claude/skills/json-flat-tool/jstool.py find apiKey config.json
+
+# Search path only (-k), value only (-v)
+python3 ~/.claude/skills/json-flat-tool/jstool.py find apiKey config.json -k
+python3 ~/.claude/skills/json-flat-tool/jstool.py find "sk-.*" config.json -v
+
+# Case-insensitive
+python3 ~/.claude/skills/json-flat-tool/jstool.py find "APIKEY" config.json -k -i
+
+# Glob mode (full-string wildcard, use * to match anywhere)
+python3 ~/.claude/skills/json-flat-tool/jstool.py find "*api*" config.json -k -g -i
+```
+
+**find options**:
+
+| Flag | Description |
+|------|-------------|
+| `-k` | Match path only |
+| `-v` | Match value only |
+| `-i` | Case-insensitive |
+| `-g` | Glob mode (fnmatch full-string wildcard instead of regex) |
+
+`-k` and `-v` are mutually exclusive. Without either flag, both path and value are searched.
+
 ### Inline / piped JSON
 
 ```bash
@@ -176,3 +205,5 @@ curl https://api.example.com/data | python3 ~/.claude/skills/json-flat-tool/jsto
 - `@file` syntax works with `set` and B-style (`=`); `merge` always takes a file path directly.
 - `copy` performs a deep clone — mutations to the copy do not affect the source.
 - `merge` for non-dict targets replaces the value entirely (patch wins).
+- `find -g` uses `fnmatch` (full-string wildcard): use `*api*` not `api*` for substring matching.
+- `find` without `-g` uses Python `re.search` (substring regex by default).
