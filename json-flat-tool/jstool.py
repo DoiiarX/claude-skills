@@ -21,6 +21,7 @@ Paths:
   root            the root node itself
 """
 
+import copy as _copy
 import json
 import re
 import sys
@@ -374,7 +375,12 @@ def parse_value(val_str: str) -> Any:
     """
     Try JSON parse first (handles true/false/null/numbers/objects/arrays).
     Fall back to plain string.
+    If val_str starts with '@', read value from that file path.
     """
+    if val_str.startswith("@"):
+        filepath = val_str[1:]
+        with open(filepath, "r", encoding="utf-8") as f:
+            return json.load(f)
     try:
         return json.loads(val_str)
     except json.JSONDecodeError:
@@ -728,6 +734,69 @@ def apply_set_null(data: Any, segments: list) -> Any:
     return data
 
 
+# ── copy ───────────────────────────────────────────────────────────────────────
+def apply_copy(data: Any, src_segs: list, dst_segs: list) -> Any:
+    _, _, src_val = navigate(data, src_segs)
+    return apply_set(data, dst_segs, _copy.deepcopy(src_val))
+
+
+def preview_copy(data: Any, src_segs: list, dst_segs: list,
+                 src_str: str, dst_str: str):
+    _, _, src_val = navigate(data, src_segs)
+    new_json = json.dumps(src_val, ensure_ascii=False)
+    short = new_json if len(new_json) <= 80 else new_json[:77] + "..."
+
+    print()
+    print(f"  {C_PATH}{src_str}{C_RESET}")
+    print(f"    {C_DIM}{short}{C_RESET}")
+    print(f"  → {C_PATH}{dst_str}{C_RESET}")
+    print(f"\n{C_BOLD}[PREVIEW]{C_RESET} "
+          f"copy {C_PATH}{src_str}{C_RESET} → {C_PATH}{dst_str}{C_RESET}")
+    print("Run with -f to apply.\n")
+
+
+# ── merge ──────────────────────────────────────────────────────────────────────
+def deep_merge(base: Any, patch: Any) -> Any:
+    """Recursively merge patch into base. Dicts are merged; all other types replaced."""
+    if isinstance(base, dict) and isinstance(patch, dict):
+        result = dict(base)
+        for k, v in patch.items():
+            result[k] = deep_merge(result[k], v) if k in result else v
+        return result
+    return patch
+
+
+def apply_merge(data: Any, segs: list, patch: Any) -> Any:
+    if not segs:
+        return deep_merge(data, patch)
+    parent, key, node = navigate(data, segs)
+    parent[key] = deep_merge(node, patch)
+    return data
+
+
+def preview_merge(data: Any, segs: list, patch: Any,
+                  path_str: str, patch_src: str):
+    node = navigate(data, segs)[2] if segs else data
+
+    print()
+    if isinstance(patch, dict) and isinstance(node, dict):
+        new_keys = [k for k in patch if k not in node]
+        upd_keys = [k for k in patch if k in node]
+        if new_keys:
+            print(f"  {C_ADD}+ add:{C_RESET}    {', '.join(new_keys)}")
+        if upd_keys:
+            print(f"  {C_MOD}~ update:{C_RESET}  {', '.join(upd_keys)}")
+    else:
+        short = json.dumps(patch, ensure_ascii=False)
+        if len(short) > 80:
+            short = short[:77] + "..."
+        print(f"  Replace {C_PATH}{path_str}{C_RESET} with: {C_ADD}{short}{C_RESET}")
+
+    print(f"\n{C_BOLD}[PREVIEW]{C_RESET} "
+          f"merge {C_PATH}{path_str}{C_RESET} ← {C_ADD}{patch_src}{C_RESET}")
+    print("Run with -f to apply.\n")
+
+
 # ── JSON Schema inference ──────────────────────────────────────────────────────
 _SCHEMA_SAMPLE = 20   # max array elements to sample for type merging
 
@@ -853,7 +922,7 @@ def emit_result(data: Any, filepath: Optional[str], force: bool):
 
 
 # ── Fuzzy command suggestion ───────────────────────────────────────────────────
-COMMANDS = ["view", "schema", "set", "before", "after", "del", "set-null", "help"]
+COMMANDS = ["view", "schema", "set", "before", "after", "del", "set-null", "copy", "merge", "help"]
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -1081,6 +1150,39 @@ def main():
             preview_set_null(data, segs, path_str)
         else:
             apply_set_null(data, segs)
+            emit_result(data, filepath, force)
+
+    # ── copy ──────────────────────────────────────────────────────────────────
+    elif cmd == "copy":
+        if len(rest) < 2:
+            print("Usage: jstool copy <src-path> <dst-path> [file] [-f]")
+            sys.exit(1)
+        src_str, dst_str = rest[0], rest[1]
+        file_arg = rest[2] if len(rest) > 2 else None
+        data, filepath = read_json(file_arg)
+        src_segs = parse_path(src_str)
+        dst_segs = parse_path(dst_str)
+        if not force:
+            preview_copy(data, src_segs, dst_segs, src_str, dst_str)
+        else:
+            apply_copy(data, src_segs, dst_segs)
+            emit_result(data, filepath, force)
+
+    # ── merge ─────────────────────────────────────────────────────────────────
+    elif cmd == "merge":
+        if len(rest) < 2:
+            print("Usage: jstool merge <path> <patch.json> [file] [-f]")
+            sys.exit(1)
+        path_str, patch_src = rest[0], rest[1]
+        file_arg = rest[2] if len(rest) > 2 else None
+        data, filepath = read_json(file_arg)
+        segs = parse_path(path_str)
+        with open(patch_src, "r", encoding="utf-8") as pf:
+            patch = json.load(pf)
+        if not force:
+            preview_merge(data, segs, patch, path_str, patch_src)
+        else:
+            data = apply_merge(data, segs, patch)
             emit_result(data, filepath, force)
 
     else:
