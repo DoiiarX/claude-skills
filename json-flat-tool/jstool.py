@@ -728,6 +728,104 @@ def apply_set_null(data: Any, segments: list) -> Any:
     return data
 
 
+# ── JSON Schema inference ──────────────────────────────────────────────────────
+_SCHEMA_SAMPLE = 20   # max array elements to sample for type merging
+
+
+def _merge_schemas(schemas: list) -> dict:
+    """Merge a list of schemas into one (used for array item inference)."""
+    if not schemas:
+        return {}
+    if len(schemas) == 1:
+        return schemas[0]
+
+    types: set = set()
+    for s in schemas:
+        t = s.get("type")
+        if t:
+            types.add(t)
+
+    if len(types) == 0:
+        return {}
+
+    if len(types) == 1:
+        t = list(types)[0]
+
+        if t == "object":
+            all_props: dict = {}
+            required_sets: list = []
+            for s in schemas:
+                for k, v in s.get("properties", {}).items():
+                    if k not in all_props:
+                        all_props[k] = v
+                req = s.get("required", [])
+                required_sets.append(set(req))
+            result: dict = {"type": "object", "properties": all_props}
+            if required_sets:
+                common = required_sets[0].intersection(*required_sets[1:])
+                if common:
+                    result["required"] = sorted(common)
+            return result
+
+        if t == "array":
+            sub = [s.get("items", {}) for s in schemas]
+            return {"type": "array", "items": _merge_schemas(sub)}
+
+        return {"type": t}
+
+    # Multiple primitive types
+    non_null = types - {"null"}
+    if non_null and len(non_null) == 1 and "null" in types:
+        return {"type": list(non_null)[0], "nullable": True}
+    return {"oneOf": [{"type": t} for t in sorted(types)]}
+
+
+def _infer(data: Any) -> dict:
+    """Recursively infer JSON Schema for a value."""
+    if data is None:
+        return {"type": "null"}
+    if isinstance(data, bool):
+        return {"type": "boolean"}
+    if isinstance(data, int):
+        return {"type": "integer"}
+    if isinstance(data, float):
+        return {"type": "number"}
+    if isinstance(data, str):
+        return {"type": "string"}
+
+    if isinstance(data, list):
+        if not data:
+            return {"type": "array", "items": {}}
+        samples = data[:_SCHEMA_SAMPLE]
+        item_schemas = [_infer(item) for item in samples]
+        return {"type": "array", "items": _merge_schemas(item_schemas)}
+
+    if isinstance(data, dict):
+        if not data:
+            return {"type": "object", "properties": {}}
+        properties = {k: _infer(v) for k, v in data.items()}
+        required = sorted(
+            k for k, v in data.items()
+            if v is not None and v != "" and v != [] and v != {}
+        )
+        result = {"type": "object", "properties": properties}
+        if required:
+            result["required"] = required
+        return result
+
+    return {}
+
+
+def cmd_schema(data: Any, title: str = "Inferred Schema"):
+    """Output JSON Schema Draft 7 inferred from data."""
+    schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": title,
+    }
+    schema.update(_infer(data))
+    print(json.dumps(schema, indent=2, ensure_ascii=False))
+
+
 # ── I/O ────────────────────────────────────────────────────────────────────────
 def read_json(file_arg: Optional[str]) -> tuple:
     """Returns (data, filepath_or_None)."""
@@ -755,7 +853,7 @@ def emit_result(data: Any, filepath: Optional[str], force: bool):
 
 
 # ── Fuzzy command suggestion ───────────────────────────────────────────────────
-COMMANDS = ["view", "set", "before", "after", "del", "set-null", "help"]
+COMMANDS = ["view", "schema", "set", "before", "after", "del", "set-null", "help"]
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -815,8 +913,9 @@ def usage():
     print(f"{U}jstool{R} - JSON flat view and edit tool")
     print()
     print(f"{U}USAGE{R}")
-    print(f"  jstool view  [file] [-s] [-F <path>] [-n <N>] [-O <N>]")
-    print(f"  jstool set   <path> <value> [file] [-f]")
+    print(f"  jstool view   [file] [-s] [-F <path>] [-n <N>] [-O <N>] [-E <N>] [-L <N>]")
+    print(f"  jstool schema [file] [--title <title>]")
+    print(f"  jstool set    <path> <value> [file] [-f]")
     print(f"  jstool <path> = <value> [file] [-f]          {D}# B-style{R}")
     print(f"  jstool before <path> <value> [file] [-f]     {D}# insert before (array){R}")
     print(f"  jstool after  <path> <value> [file] [-f]     {D}# insert after  (array){R}")
@@ -904,6 +1003,20 @@ def main():
         cmd_view(data, schema=schema, filter_path=filter_path,
                  limit=limit, offset=offset,
                  elem_offset=elem_offset, elem_limit=elem_limit)
+
+    # ── schema ────────────────────────────────────────────────────────────────
+    elif cmd == "schema":
+        title = "Inferred Schema"
+        i = 0
+        positional = []
+        while i < len(rest):
+            if rest[i] == "--title" and i + 1 < len(rest):
+                title = rest[i + 1]; i += 2
+            else:
+                positional.append(rest[i]); i += 1
+        file_arg = positional[0] if positional else None
+        data, _ = read_json(file_arg)
+        cmd_schema(data, title)
 
     # ── set ───────────────────────────────────────────────────────────────────
     elif cmd == "set":

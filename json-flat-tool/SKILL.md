@@ -1,65 +1,78 @@
 ---
 name: json-flat-tool
-description: JSON 平铺查看与编辑工具。当用户提供 JSON 文件/数据并想要查看结构、修改字段、插入/删除元素时使用。触发词：view json, edit json, set json field, jstool, json flat, 查看json, 编辑json, 修改json字段
+description: JSON flat view, schema inference, and edit tool. Use when the user provides a JSON file or data and wants to explore its structure, infer its schema, or modify fields. Triggers on: view json, edit json, json schema, json structure, set json field, jstool, analyze json, flat view, orderbook, json flat.
 ---
 
-# JSON Flat Tool Skill
+# JSON Flat Tool
 
-此 skill 使用 `jstool.py` 对 JSON 数据进行平铺查看和结构化编辑。
+A single-script tool (`jstool.py`) for viewing, inspecting, and editing JSON data.
 
-脚本路径：`~/.claude/skills/json-flat-tool/jstool.py`
+Script path: `~/.claude/skills/json-flat-tool/jstool.py`
 
-## 调用方式
+## Invocation
 
 ```bash
 python3 ~/.claude/skills/json-flat-tool/jstool.py <command> [args]
 ```
 
-## 命令一览
+## Commands
 
-| 命令 | 说明 |
-|------|------|
-| `view [file] [-s] [-F path] [-n N] [-O N]` | 平铺显示 JSON 结构 |
-| `set <path> <value> [file] [-f]` | 修改字段值 |
-| `<path> = <value> [file] [-f]` | 同上，B-style 语法 |
-| `before <path> <value> [file] [-f]` | 在数组元素前插入 |
-| `after <path> <value> [file] [-f]` | 在数组元素后插入 |
-| `del <path> [file] [-f]` | 删除字段或元素 |
-| `set-null <path> [file] [-f]` | 将字段设为 null |
+| Command | Description |
+|---------|-------------|
+| `view [file] [opts]` | Flat path/type/value display |
+| `schema [file] [--title T]` | Infer JSON Schema Draft 7 |
+| `set <path> <value> [file] [-f]` | Set a field value |
+| `<path> = <value> [file] [-f]` | Same, B-style syntax |
+| `before <path> <value> [file] [-f]` | Insert before array element |
+| `after <path> <value> [file] [-f]` | Insert after array element |
+| `del <path> [file] [-f]` | Delete a key or element |
+| `set-null <path> [file] [-f]` | Set a field to null |
 
-**view 选项**：
-- `-s` / `--schema`：结构模式——合并 `[N]→[*]`，去重，隐藏具体值
-- `-F <path>`：只显示该路径及其子节点
-- `-n <N>`：最多显示 N 行
-- `-O <N>`：跳过前 N 行（配合 `-n` 实现分页）
+Omit `[file]` to read from stdin.
 
-**`-f` 标志**（编辑命令）：默认为预览模式；加 `-f` 才真正写入文件。
+## view Options
 
-## 路径语法
+| Flag | Unit | Description |
+|------|------|-------------|
+| `-s` | — | Schema mode: collapse `[N]→[*]`, deduplicate, hide values |
+| `-F <path>` | — | Filter: show only this path and its children |
+| `-n <N>` | rows | Show at most N rows |
+| `-O <N>` | rows | Skip first N rows |
+| `-E <N>` | elements | Skip first N array elements (use with `-F`) |
+| `-L <N>` | elements | Show at most N array elements (use with `-F`) |
+
+`-E` and `-L` are element-aware and never cut an element in the middle.
+
+## Edit flags
+
+- `-f` — Force: apply change to file. Default is **preview-only**.
+- Without `-f`: shows a color-annotated diff of the original JSON with `~~~~~` underline markers at the exact change position.
+
+## Path syntax
 
 ```
-root              → 根节点
-count             → 根级别字段
-users[0]          → 数组元素
-users[0].name     → 嵌套字段
-root[0].key       → 根数组元素的字段
+root              root node
+count             root-level key
+users[0]          array element
+users[0].name     nested key
+root[0].key       root-array element key
 ```
 
-## 值语法
+## Value parsing
+
+Values are parsed as JSON first, then fall back to plain string:
 
 ```
-Alice             → string（自动推断）
-42                → integer
-3.14              → number
-true / false      → boolean
-null              → null
-'{"k":"v"}'       → object（JSON 格式）
-'[1,2,3]'         → array（JSON 格式）
+Alice          → string
+42             → integer
+3.14           → number
+true / false   → boolean
+null           → null
+'{"k":"v"}'    → object
+'[1,2,3]'      → array
 ```
 
-## 输出格式
-
-`view` 命令输出格式：`path type value`
+## Output format (view)
 
 ```
 root object
@@ -67,78 +80,59 @@ users array
 users[0] object
 users[0].name string Alice
 users[0].age integer 30
-users[1].age integer (null)     ← 品红：null 但推断出类型
-orphan unknown (null)           ← 红色：无法推断类型
-meta object (empty)             ← 暗色：空容器
+users[1].age integer (null)    ← magenta: null with inferred type
+orphan unknown (null)          ← red: null, type unknown
+meta object (empty)            ← dim: empty container
 ```
 
-颜色说明：
-- 青色：路径
-- 黄色：类型
-- 绿色：值
-- 品红色：null（类型已推断）
-- 红色：unknown null / 删除操作
-- 暗色：(empty) 容器
+Colors: cyan = path, yellow = type, green = value,
+        magenta = inferred null, red = unknown/delete, dim = empty.
 
-## 预览模式示例
+## Workflow
 
-预览 `set users[0].name Bob`:
-```
-  {
-    "users": [
-      {
-        "name": "Alice",
-                ~~~~~~~ → "Bob"
-        ...
-      }
-    ]
-  }
+### Explore a JSON file
 
-[PREVIEW] set users[0].name: "Alice" → "Bob"
-Run with -f to apply.
-```
-
-## 工作流程
-
-### Step 1: 确认输入
-用户提供：
-- 文件路径（`/path/to/data.json`）
-- 或直接粘贴 JSON 字符串
-
-对于粘贴的内容，先保存到临时文件：
 ```bash
-cat > /tmp/data.json << 'EOF'
-<user's json>
-EOF
+# Quick structure overview
+python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -s
+
+# Filter to a nested array, element-aware pagination
+python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -F "data[0].bids" -E 5 -L 3
+
+# Infer JSON Schema Draft 7
+python3 ~/.claude/skills/json-flat-tool/jstool.py schema data.json --title "My API"
 ```
 
-### Step 2: 查看结构
+### Edit a JSON file
+
 ```bash
-python3 ~/.claude/skills/json-flat-tool/jstool.py view /tmp/data.json
+# Preview change (default)
+python3 ~/.claude/skills/json-flat-tool/jstool.py set users[0].name Bob data.json
+
+# Apply change
+python3 ~/.claude/skills/json-flat-tool/jstool.py set users[0].name Bob data.json -f
+
+# B-style
+python3 ~/.claude/skills/json-flat-tool/jstool.py "users[0].name" = Bob data.json -f
+
+# Insert / delete
+python3 ~/.claude/skills/json-flat-tool/jstool.py before users[1] '{"name":"Eve"}' data.json -f
+python3 ~/.claude/skills/json-flat-tool/jstool.py del users[2] data.json -f
+python3 ~/.claude/skills/json-flat-tool/jstool.py set-null users[0].age data.json -f
 ```
 
-### Step 3: 执行编辑（预览）
+### Inline / piped JSON
+
 ```bash
-# 修改字段
-python3 ~/.claude/skills/json-flat-tool/jstool.py set users[0].name "Bob" /tmp/data.json
-
-# B-style 等价写法
-python3 ~/.claude/skills/json-flat-tool/jstool.py "users[0].name" = "Bob" /tmp/data.json
+echo '{"name":"Alice"}' | python3 ~/.claude/skills/json-flat-tool/jstool.py view
+curl https://api.example.com/data | python3 ~/.claude/skills/json-flat-tool/jstool.py schema
 ```
 
-### Step 4: 确认后写入
-```bash
-python3 ~/.claude/skills/json-flat-tool/jstool.py set users[0].name "Bob" /tmp/data.json -f
-```
+## Notes
 
-### Step 5: stdin 管道（只读，无法 -f 写回）
-```bash
-curl https://api.example.com/data | python3 ~/.claude/skills/json-flat-tool/jstool.py view
-```
-
-## 注意事项
-
-- `before`/`after` 只对**数组元素**有效，对 object key 无效
-- object 新增字段统一用 `set`（自动追加到末尾）
-- stdin 模式下，`-f` 无法写回（无文件路径），会打印到 stdout
-- 路径大小写敏感，与 JSON key 一致
+- `before` / `after` only apply to **array elements**, not object keys.
+- To add a new key to an object, use `set`.
+- `-f` without a file path prints modified JSON to stdout.
+- `-E` / `-L` require `-F` pointing to an array path.
+- Array sampling for schema inference: up to 20 elements.
+- `required` in schema = fields present and non-empty in all sampled elements.
