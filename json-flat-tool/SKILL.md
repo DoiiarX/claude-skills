@@ -1,6 +1,6 @@
 ---
 name: json-flat-tool
-description: JSON flat view, schema inference, and edit tool. Use when the user provides a JSON file or data and wants to explore its structure, infer its schema, or modify fields. Triggers on: view json, edit json, json schema, json structure, set json field, jstool, analyze json, flat view, orderbook, json flat.
+description: "JSON flat view, schema inference, and edit tool. Use when the user provides a JSON file or data and wants to explore its structure, infer its schema, or modify fields. Triggers on: view json, edit json, json schema, json structure, set json field, jstool, analyze json, flat view, orderbook, json flat."
 ---
 
 # JSON Flat Tool
