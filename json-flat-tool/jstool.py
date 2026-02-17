@@ -22,6 +22,7 @@ Paths:
 """
 
 import copy as _copy
+import difflib
 import json
 import re
 import sys
@@ -504,17 +505,54 @@ def _show_insert_marker(pretty: str, open_line_idx: int,
             print(f"  {line}")
 
 
+# ── Diff preview helper ────────────────────────────────────────────────────────
+def _show_result_diff(orig_data: Any, result_data: Any, context: int = 3):
+    """
+    Show a git-style line diff between orig and result JSON.
+    Only changed regions ± context lines are shown; gaps collapse to '...'.
+      red   (- line)  = removed
+      green (+ line)  = added
+    """
+    orig_lines   = json.dumps(orig_data,   indent=2, ensure_ascii=False).split('\n')
+    result_lines = json.dumps(result_data, indent=2, ensure_ascii=False).split('\n')
+
+    matcher = difflib.SequenceMatcher(None, orig_lines, result_lines, autojunk=False)
+    groups  = list(matcher.get_grouped_opcodes(context))
+    if not groups:
+        return
+
+    for g_idx, group in enumerate(groups):
+        if g_idx == 0 and group[0][3] > 0:
+            print(f"{C_DIM}  ...{C_RESET}")
+        elif g_idx > 0:
+            print(f"{C_DIM}  ...{C_RESET}")
+
+        for tag, i1, i2, j1, j2 in group:
+            if tag == 'equal':
+                for line in orig_lines[i1:i2]:
+                    print(f"   {line}")
+            if tag in ('replace', 'delete'):
+                for line in orig_lines[i1:i2]:
+                    print(f"  {C_DEL}- {line}{C_RESET}")
+            if tag in ('replace', 'insert'):
+                for line in result_lines[j1:j2]:
+                    print(f"  {C_ADD}+ {line}{C_RESET}")
+
+    if groups[-1][-1][4] < len(result_lines):
+        print(f"{C_DIM}  ...{C_RESET}")
+
+
 # ── Preview commands ───────────────────────────────────────────────────────────
 def preview_set(data: Any, segments: list, new_val: Any, path_str: str):
-    parent, key, old_val = navigate(data, segments)
-    old_json  = json.dumps(old_val, ensure_ascii=False)
-    new_json  = json.dumps(new_val, ensure_ascii=False)
-    pretty    = json.dumps(data, indent=2, ensure_ascii=False)
-    short_new = new_json if len(new_json) <= 50 else new_json[:47] + "..."
+    _, _, old_val = navigate(data, segments)
+    old_json = json.dumps(old_val, ensure_ascii=False)
+    new_json = json.dumps(new_val, ensure_ascii=False)
+
+    result = _copy.deepcopy(data)
+    result = apply_set(result, segments, new_val)
 
     print()
-    if not _show_node_context(pretty, key, old_val, f"→ {short_new}", C_MOD):
-        print(f"  (could not locate value in JSON text)\n")
+    _show_result_diff(data, result)
 
     old_short = old_json if len(old_json) <= 60 else old_json[:57] + "..."
     new_short = new_json if len(new_json) <= 60 else new_json[:57] + "..."
@@ -783,20 +821,25 @@ def apply_set_null(data: Any, segments: list) -> Any:
 # ── copy ───────────────────────────────────────────────────────────────────────
 def apply_copy(data: Any, src_segs: list, dst_segs: list) -> Any:
     _, _, src_val = navigate(data, src_segs)
-    return apply_set(data, dst_segs, _copy.deepcopy(src_val))
+    new_val = _copy.deepcopy(src_val)
+    # If destination is a new array index (>= current length), append instead
+    if dst_segs:
+        parent_segs, last_seg = dst_segs[:-1], dst_segs[-1]
+        _, _, parent = navigate(data, parent_segs)
+        if isinstance(parent, list) and isinstance(last_seg, int) and last_seg >= len(parent):
+            parent.append(new_val)
+            return data
+    return apply_set(data, dst_segs, new_val)
 
 
 def preview_copy(data: Any, src_segs: list, dst_segs: list,
                  src_str: str, dst_str: str):
-    parent, key, src_val = navigate(data, src_segs)
-    new_json = json.dumps(src_val, ensure_ascii=False)
-    pretty   = json.dumps(data, indent=2, ensure_ascii=False)
+    result = _copy.deepcopy(data)
+    apply_copy(result, src_segs, dst_segs)
 
     print()
-    if not _show_node_context(pretty, key, src_val,
-                              f"← COPY → {dst_str}", C_ADD):
-        short = new_json if len(new_json) <= 80 else new_json[:77] + "..."
-        print(f"  {C_ADD}{short}{C_RESET}")
+    _show_result_diff(data, result)
+
     print(f"\n{C_BOLD}[PREVIEW]{C_RESET} "
           f"copy {C_PATH}{src_str}{C_RESET} → {C_PATH}{dst_str}{C_RESET}")
     print("Run with -f to apply.\n")
@@ -823,37 +866,13 @@ def apply_merge(data: Any, segs: list, patch: Any) -> Any:
 
 def preview_merge(data: Any, segs: list, patch: Any,
                   path_str: str, patch_src: str):
-    parent, key, node = navigate(data, segs) if segs else (None, None, data)
-    pretty = json.dumps(data, indent=2, ensure_ascii=False)
+    node = navigate(data, segs)[2] if segs else data
 
-    # Build short inline annotation for the underline label
-    if isinstance(patch, dict) and isinstance(node, dict):
-        new_keys = [k for k in patch if k not in node]
-        upd_keys = [k for k in patch if k in node]
-        parts = []
-        if new_keys: parts.append(f"+{len(new_keys)}")
-        if upd_keys: parts.append(f"~{len(upd_keys)}")
-        label = f"← merge ({', '.join(parts)})" if parts else "← merge"
-    else:
-        label = "← replace"
+    result = _copy.deepcopy(data)
+    result = apply_merge(result, segs, patch)
 
     print()
-    if segs:
-        _show_node_context(pretty, key, node, label, C_MOD)
-
-    # Detail breakdown below context
-    if isinstance(patch, dict) and isinstance(node, dict):
-        new_keys = [k for k in patch if k not in node]
-        upd_keys = [k for k in patch if k in node]
-        if new_keys:
-            print(f"  {C_ADD}+ add:{C_RESET}    {', '.join(new_keys)}")
-        if upd_keys:
-            print(f"  {C_MOD}~ update:{C_RESET}  {', '.join(upd_keys)}")
-    else:
-        short = json.dumps(patch, ensure_ascii=False)
-        if len(short) > 80:
-            short = short[:77] + "..."
-        print(f"  Replace {C_PATH}{path_str}{C_RESET} with: {C_ADD}{short}{C_RESET}")
+    _show_result_diff(data, result)
 
     print(f"\n{C_BOLD}[PREVIEW]{C_RESET} "
           f"merge {C_PATH}{path_str}{C_RESET} ← {C_ADD}{patch_src}{C_RESET}")
