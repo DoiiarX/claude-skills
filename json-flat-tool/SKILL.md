@@ -27,6 +27,8 @@ python3 ~/.claude/skills/json-flat-tool/jstool.py <command> [args]
 | `after <path> <value> [file] [-f]` | Insert after array element |
 | `del <path> [file] [-f]` | Delete a key or element |
 | `set-null <path> [file] [-f]` | Set a field to null |
+| `copy <src> <dst> [file] [-f]` | Deep-clone a subtree to a new path |
+| `merge <path> <patch.json> [file] [-f]` | Deep-merge a JSON file into a path |
 
 Omit `[file]` to read from stdin.
 
@@ -70,6 +72,7 @@ true / false   → boolean
 null           → null
 '{"k":"v"}'    → object
 '[1,2,3]'      → array
+@path/to.json  → read value from file
 ```
 
 ## Output format (view)
@@ -121,6 +124,40 @@ python3 ~/.claude/skills/json-flat-tool/jstool.py del users[2] data.json -f
 python3 ~/.claude/skills/json-flat-tool/jstool.py set-null users[0].age data.json -f
 ```
 
+### Set value from file (`@file`)
+
+```bash
+# Write a complex object to a file, then set it at a path
+python3 ~/.claude/skills/json-flat-tool/jstool.py set provider.openai @/tmp/openai.json config.json -f
+```
+
+### Clone a subtree (`copy`)
+
+```bash
+# Clone an existing model as the base for a new one (preview)
+python3 ~/.claude/skills/json-flat-tool/jstool.py copy \
+  provider.google.models.antigravity-gemini-3-pro \
+  provider.google.models.my-new-model \
+  config.json
+
+# Apply
+python3 ~/.claude/skills/json-flat-tool/jstool.py copy \
+  provider.google.models.antigravity-gemini-3-pro \
+  provider.google.models.my-new-model \
+  config.json -f
+```
+
+### Deep-merge a patch file (`merge`)
+
+```bash
+# patch.json only needs to contain the fields to add/update
+# preview: shows which keys are added (+) and updated (~)
+python3 ~/.claude/skills/json-flat-tool/jstool.py merge provider.google.models /tmp/new-models.json config.json
+
+# Apply
+python3 ~/.claude/skills/json-flat-tool/jstool.py merge provider.google.models /tmp/new-models.json config.json -f
+```
+
 ### Inline / piped JSON
 
 ```bash
@@ -136,3 +173,6 @@ curl https://api.example.com/data | python3 ~/.claude/skills/json-flat-tool/jsto
 - `-E` / `-L` require `-F` pointing to an array path.
 - Array sampling for schema inference: up to 20 elements.
 - `required` in schema = fields present and non-empty in all sampled elements.
+- `@file` syntax works with `set` and B-style (`=`); `merge` always takes a file path directly.
+- `copy` performs a deep clone — mutations to the copy do not affect the source.
+- `merge` for non-dict targets replaces the value entirely (patch wins).
