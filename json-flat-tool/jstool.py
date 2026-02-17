@@ -599,10 +599,31 @@ def _find_element_line(lines: list, val: Any) -> Optional[int]:
     return None
 
 
+def _show_inline_label(lines: list, anchor_li: int, color: str, label: str):
+    """
+    Show a context window (±3 lines) around anchor_li.
+    The anchor line is colorized and the label is appended inline at the end.
+    No extra line is inserted — suitable for container opening brackets.
+    """
+    context = 3
+    for i, line in enumerate(lines):
+        dist = abs(i - anchor_li)
+        if dist > context:
+            if dist == context + 1:
+                print(f"{C_DIM}  ...{C_RESET}")
+            continue
+        if i == anchor_li:
+            print(f"  {color}{line}{C_RESET}  {C_DIM}◀{C_RESET}  {color}{label}{C_RESET}")
+        else:
+            print(f"  {line}")
+
+
 def _show_node_context(pretty: str, key: Any, val: Any,
                        label: str, color: str) -> bool:
     """
     Locate val (held under key) in pretty-printed JSON and show it with a label.
+    - Primitives: underline with tilde row (existing style).
+    - Containers: inline label appended to the opening bracket line.
     key: str (dict key) | int (array index) | None (root).
     Returns True if the location was found.
     """
@@ -614,10 +635,8 @@ def _show_node_context(pretty: str, key: Any, val: Any,
             search  = f'"{key}": {open_ch}'
             found   = _find_first(lines, search)
             if found:
-                li, cs, _ = found
-                val_start = cs + len(f'"{key}": ')
-                val_end   = val_start + 1          # just the opening bracket
-                _show_with_underline(pretty, li, val_start, val_end, label, color)
+                li = found[0]
+                _show_inline_label(lines, li, color, label)
                 return True
         else:
             search = f'"{key}": {json.dumps(val, ensure_ascii=False)}'
@@ -632,9 +651,7 @@ def _show_node_context(pretty: str, key: Any, val: Any,
         if isinstance(val, (dict, list)):
             ref_li = _find_element_line(lines, val)
             if ref_li is not None:
-                line = lines[ref_li]
-                col  = len(line) - len(line.lstrip())
-                _show_with_underline(pretty, ref_li, col, col + 1, label, color)
+                _show_inline_label(lines, ref_li, color, label)
                 return True
         else:
             found = _find_first(lines, json.dumps(val, ensure_ascii=False))
