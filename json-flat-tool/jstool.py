@@ -507,38 +507,20 @@ def _show_insert_marker(pretty: str, open_line_idx: int,
 # ── Preview commands ───────────────────────────────────────────────────────────
 def preview_set(data: Any, segments: list, new_val: Any, path_str: str):
     parent, key, old_val = navigate(data, segments)
-    old_json = json.dumps(old_val, ensure_ascii=False)
-    new_json = json.dumps(new_val, ensure_ascii=False)
-    pretty   = json.dumps(data, indent=2, ensure_ascii=False)
-    lines    = pretty.split('\n')
+    old_json  = json.dumps(old_val, ensure_ascii=False)
+    new_json  = json.dumps(new_val, ensure_ascii=False)
+    pretty    = json.dumps(data, indent=2, ensure_ascii=False)
+    short_new = new_json if len(new_json) <= 50 else new_json[:47] + "..."
 
     print()
-    # Find the key+value in pretty text
-    if isinstance(key, str):
-        search = f'"{key}": {old_json}'
-        found  = _find_first(lines, search)
-        if found:
-            li, cs, ce = found
-            # Underline only the value portion
-            val_start = cs + len(f'"{key}": ')
-            val_end   = cs + len(search)
-            _show_with_underline(pretty, li, val_start, val_end,
-                                 f"→ {new_json}", C_MOD)
-        else:
-            print(f"  (could not locate value in JSON text)\n")
-    else:
-        # Array index: search for old value literally
-        found = _find_first(lines, old_json)
-        if found:
-            li, cs, ce = found
-            _show_with_underline(pretty, li, cs, ce,
-                                 f"→ {new_json}", C_MOD)
-        else:
-            print(f"  (could not locate value in JSON text)\n")
+    if not _show_node_context(pretty, key, old_val, f"→ {short_new}", C_MOD):
+        print(f"  (could not locate value in JSON text)\n")
 
+    old_short = old_json if len(old_json) <= 60 else old_json[:57] + "..."
+    new_short = new_json if len(new_json) <= 60 else new_json[:57] + "..."
     print(f"\n{C_BOLD}[PREVIEW]{C_RESET} "
           f"set {C_PATH}{path_str}{C_RESET}: "
-          f"{C_DEL}{old_json}{C_RESET} → {C_ADD}{new_json}{C_RESET}")
+          f"{C_DEL}{old_short}{C_RESET} → {C_ADD}{new_short}{C_RESET}")
     print("Run with -f to apply.\n")
 
 
@@ -615,6 +597,53 @@ def _find_element_line(lines: list, val: Any) -> Optional[int]:
                 return li
 
     return None
+
+
+def _show_node_context(pretty: str, key: Any, val: Any,
+                       label: str, color: str) -> bool:
+    """
+    Locate val (held under key) in pretty-printed JSON and show it with a label.
+    key: str (dict key) | int (array index) | None (root).
+    Returns True if the location was found.
+    """
+    lines = pretty.split('\n')
+
+    if isinstance(key, str):
+        if isinstance(val, (dict, list)):
+            open_ch = '{' if isinstance(val, dict) else '['
+            search  = f'"{key}": {open_ch}'
+            found   = _find_first(lines, search)
+            if found:
+                li, cs, _ = found
+                val_start = cs + len(f'"{key}": ')
+                val_end   = val_start + 1          # just the opening bracket
+                _show_with_underline(pretty, li, val_start, val_end, label, color)
+                return True
+        else:
+            search = f'"{key}": {json.dumps(val, ensure_ascii=False)}'
+            found  = _find_first(lines, search)
+            if found:
+                li, cs, ce = found
+                val_start = cs + len(f'"{key}": ')
+                _show_with_underline(pretty, li, val_start, ce, label, color)
+                return True
+
+    elif isinstance(key, int):
+        if isinstance(val, (dict, list)):
+            ref_li = _find_element_line(lines, val)
+            if ref_li is not None:
+                line = lines[ref_li]
+                col  = len(line) - len(line.lstrip())
+                _show_with_underline(pretty, ref_li, col, col + 1, label, color)
+                return True
+        else:
+            found = _find_first(lines, json.dumps(val, ensure_ascii=False))
+            if found:
+                li, cs, ce = found
+                _show_with_underline(pretty, li, cs, ce, label, color)
+                return True
+
+    return False
 
 
 def preview_insert(data: Any, segments: list,
@@ -742,14 +771,15 @@ def apply_copy(data: Any, src_segs: list, dst_segs: list) -> Any:
 
 def preview_copy(data: Any, src_segs: list, dst_segs: list,
                  src_str: str, dst_str: str):
-    _, _, src_val = navigate(data, src_segs)
+    parent, key, src_val = navigate(data, src_segs)
     new_json = json.dumps(src_val, ensure_ascii=False)
-    short = new_json if len(new_json) <= 80 else new_json[:77] + "..."
+    pretty   = json.dumps(data, indent=2, ensure_ascii=False)
 
     print()
-    print(f"  {C_PATH}{src_str}{C_RESET}")
-    print(f"    {C_DIM}{short}{C_RESET}")
-    print(f"  → {C_PATH}{dst_str}{C_RESET}")
+    if not _show_node_context(pretty, key, src_val,
+                              f"← COPY → {dst_str}", C_ADD):
+        short = new_json if len(new_json) <= 80 else new_json[:77] + "..."
+        print(f"  {C_ADD}{short}{C_RESET}")
     print(f"\n{C_BOLD}[PREVIEW]{C_RESET} "
           f"copy {C_PATH}{src_str}{C_RESET} → {C_PATH}{dst_str}{C_RESET}")
     print("Run with -f to apply.\n")
@@ -776,9 +806,25 @@ def apply_merge(data: Any, segs: list, patch: Any) -> Any:
 
 def preview_merge(data: Any, segs: list, patch: Any,
                   path_str: str, patch_src: str):
-    node = navigate(data, segs)[2] if segs else data
+    parent, key, node = navigate(data, segs) if segs else (None, None, data)
+    pretty = json.dumps(data, indent=2, ensure_ascii=False)
+
+    # Build short inline annotation for the underline label
+    if isinstance(patch, dict) and isinstance(node, dict):
+        new_keys = [k for k in patch if k not in node]
+        upd_keys = [k for k in patch if k in node]
+        parts = []
+        if new_keys: parts.append(f"+{len(new_keys)}")
+        if upd_keys: parts.append(f"~{len(upd_keys)}")
+        label = f"← merge ({', '.join(parts)})" if parts else "← merge"
+    else:
+        label = "← replace"
 
     print()
+    if segs:
+        _show_node_context(pretty, key, node, label, C_MOD)
+
+    # Detail breakdown below context
     if isinstance(patch, dict) and isinstance(node, dict):
         new_keys = [k for k in patch if k not in node]
         upd_keys = [k for k in patch if k in node]
