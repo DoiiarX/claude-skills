@@ -16,7 +16,11 @@ A single-script tool (`jstool.py`) for viewing, inspecting, and editing JSON dat
 - **Pagination** — row-level (`-n`, `-O`) and element-aware (`-E`, `-L`)
 - **Null type inference** — infers null field types from sibling values
 - **JSON Schema Draft 7** — infer schema from any JSON file
-- **Edit commands** — `set`, `before`, `after`, `del`, `set-null` with preview by default
+- **Edit commands** — `set`, `before`, `after`, `del`, `set-null` with preview by default; B-style `path = value` syntax supported
+- **`@file` value syntax** — pass a JSON file as the value: `set my.key @/tmp/val.json`
+- **Copy / merge** — deep-clone a subtree (`copy`), deep-merge a patch file (`merge`)
+- **Find** — search paths and values by regex or glob (`find -k/-v/-i/-g`)
+- **Stdin / pipe support** — omit file argument to read from stdin
 - **Fuzzy command suggestions** — Levenshtein-based typo correction
 
 **Install:**
@@ -26,23 +30,55 @@ npx skills add DoiiarX/claude-skills@json-flat-tool
 
 **Quick start:**
 ```bash
-# View structure
+# View structure (schema mode)
 python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -s
 
-# Filter to a nested array with element-aware pagination
+# Filter subtree with element-aware pagination
 python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -F "data[0].bids" -E 2 -L 5
+
+# Depth-limited view; combine with filter to expand one branch
+python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -d 2
+python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -d 1 -F users
+
+# Row-level pagination
+python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -n 50 -O 100
 
 # Infer JSON Schema
 python3 ~/.claude/skills/json-flat-tool/jstool.py schema data.json --title "My API"
 
-# Edit (preview only)
+# Edit: set (preview / apply / B-style)
 python3 ~/.claude/skills/json-flat-tool/jstool.py set users[0].name Bob data.json
-
-# Edit (apply)
 python3 ~/.claude/skills/json-flat-tool/jstool.py set users[0].name Bob data.json -f
+python3 ~/.claude/skills/json-flat-tool/jstool.py "users[0].name" = Bob data.json -f
 
-# Depth-limited view (collapse beyond 2 key levels)
-python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -d 2
+# Edit: insert / delete / set-null
+python3 ~/.claude/skills/json-flat-tool/jstool.py before users[1] '{"name":"Eve"}' data.json -f
+python3 ~/.claude/skills/json-flat-tool/jstool.py after  users[1] '{"name":"Eve"}' data.json -f
+python3 ~/.claude/skills/json-flat-tool/jstool.py del users[2] data.json -f
+python3 ~/.claude/skills/json-flat-tool/jstool.py set-null users[0].age data.json -f
+
+# Set value from file (@file syntax)
+python3 ~/.claude/skills/json-flat-tool/jstool.py set provider.openai @/tmp/openai.json config.json -f
+
+# Clone a subtree to a new path
+python3 ~/.claude/skills/json-flat-tool/jstool.py copy \
+  provider.google.models.old-model \
+  provider.google.models.new-model \
+  config.json -f
+
+# Deep-merge a patch file into a path
+python3 ~/.claude/skills/json-flat-tool/jstool.py merge provider.models /tmp/patch.json config.json -f
+
+# Find: regex (default), path-only, value-only, case-insensitive, glob
+python3 ~/.claude/skills/json-flat-tool/jstool.py find apiKey config.json
+python3 ~/.claude/skills/json-flat-tool/jstool.py find apiKey config.json -k
+python3 ~/.claude/skills/json-flat-tool/jstool.py find "sk-.*" config.json -v
+python3 ~/.claude/skills/json-flat-tool/jstool.py find "APIKEY" config.json -k -i
+python3 ~/.claude/skills/json-flat-tool/jstool.py find "*api*" config.json -k -g -i
+
+# Pipe / stdin
+echo '{"name":"Alice"}' | python3 ~/.claude/skills/json-flat-tool/jstool.py view
+curl https://api.example.com/data | python3 ~/.claude/skills/json-flat-tool/jstool.py schema
 ```
 
 ---
@@ -65,9 +101,9 @@ npx skills add DoiiarX/claude-skills@local-issue
 
 **Quick start:**
 ```
-/new-local-issue 记录 WebSocket 断线重连 bug
-/new-local-issue 添加历史推文拉取功能
-/new-local-issue 重构 plugin manager 依赖解析
+/new-issue 记录 WebSocket 断线重连 bug
+/new-issue 添加历史推文拉取功能
+/new-issue 重构 plugin manager 依赖解析
 ```
 
 ---
