@@ -11,6 +11,7 @@ A single-script tool (`jstool.py`) for viewing, inspecting, and editing JSON dat
 **Features:**
 - **Flat path/type/value view** — every field on one line: `users[0].name string Alice`
 - **Schema mode** (`-s`) — collapses arrays, deduplicates, hides values
+- **Depth limiting** (`-d N`) — collapse containers beyond N key levels, showing `{3 keys}` / `[12 items]` summaries
 - **Path filtering** (`-F`) — show only a subtree
 - **Pagination** — row-level (`-n`, `-O`) and element-aware (`-E`, `-L`)
 - **Null type inference** — infers null field types from sibling values
@@ -39,6 +40,9 @@ python3 ~/.claude/skills/json-flat-tool/jstool.py set users[0].name Bob data.jso
 
 # Edit (apply)
 python3 ~/.claude/skills/json-flat-tool/jstool.py set users[0].name Bob data.json -f
+
+# Depth-limited view (collapse beyond 2 key levels)
+python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -d 2
 ```
 
 ---
