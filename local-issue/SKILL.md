@@ -9,6 +9,8 @@ description: "本地文件系统 issue 管理。Use when the user wants to creat
 
 Issue 即 Markdown 文件，存于版本控制之中。无服务、无网络、无 API——每一条 issue 都是可被 `grep`、`cat`、`git log` 直接操作的纯文本。这让 agent 能像处理代码一样处理任务上下文：跨 issue 全文搜索、批量提取状态、在同一次 commit 中同时更新代码与 issue 进展，一切工具链天然适配。
 
+更深层的意义在于：每个独立的 issue 文件本质上是一个**事件（event）**。项目由此从线性的任务列表，演变为事件驱动的结构——多个 agent 可以各自认领不同的 issue 并行推进，CI/CD 流水线可以监听 issue 状态变更并自动触发，代码与任务的边界在 git 历史中完全透明。这或许正是 AI 原生开发的新范式：不是 AI 辅助人类写代码，而是以 issue 为协议，人与 agent 协同驱动一个持续演进的系统。
+
 ## Issue 系统位置
 
 ```
