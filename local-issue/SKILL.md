@@ -24,12 +24,15 @@ Issue 即 Markdown 文件，存于版本控制之中。无服务、无网络、�
 
 ### 1. 确定下一个 Issue 编号
 
+使用 skill 内置脚本，跨平台可用：
+
 ```bash
-# 合并 open 和 closed 目录，找最大编号
-ls .issues/open/ .issues/closed/ 2>/dev/null \
-  | grep -oE '^[0-9]+' | sort -n | tail -1
-# 新编号 = 最大编号 + 1，补零到3位（如 047）
+python3 ~/.claude/skills/local-issue/next-issue-id.py
+# 在其他路径的项目中：
+python3 ~/.claude/skills/local-issue/next-issue-id.py /path/to/project/.issues
 ```
+
+输出示例：`047`
 
 ### 2. 选择 Issue 类型
 
