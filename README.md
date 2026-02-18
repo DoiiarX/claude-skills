@@ -47,6 +47,31 @@ python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -d 2
 
 ---
 
+### [local-issue](./local-issue/)
+
+本地 issue 文件系统管理工具，用于创建和跟踪项目任务。
+
+**Features:**
+- **自动编号** — 扫描 open/closed 目录，自动分配下一个编号
+- **多类型支持** — bug / feature / refactor / chore / docs
+- **模板化内容** — 根据类型自动生成对应章节结构
+- **Git 集成** — 自动提交 issue 文件，规范引用格式
+- **即时处理** — 创建后立即开始分析和实现
+
+**Install:**
+```bash
+npx skills add DoiiarX/claude-skills@local-issue
+```
+
+**Quick start:**
+```
+/new-local-issue 记录 WebSocket 断线重连 bug
+/new-local-issue 添加历史推文拉取功能
+/new-local-issue 重构 plugin manager 依赖解析
+```
+
+---
+
 ## Installation
 
 Skills are installed via the [Skills CLI](https://skills.sh/):
