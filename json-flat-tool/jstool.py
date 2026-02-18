@@ -66,23 +66,40 @@ def fmt_val(data: Any) -> str:
 
 
 # ── Flatten ────────────────────────────────────────────────────────────────────
-def flatten(data: Any, path: str = "root", root_level: bool = True) -> list:
+def flatten(data: Any, path: str = "root", root_level: bool = True,
+            max_depth: Optional[int] = None, _depth: int = 0) -> list:
     """
     Returns list of (path, type_name, value_marker):
-      value_marker = None      → container with children
-      value_marker = "(empty)" → empty container
-      value_marker = <Any>     → primitive value (None means JSON null)
+      value_marker = None        → container with children
+      value_marker = "(empty)"   → empty container
+      value_marker = "{N keys}"  → object collapsed by --depth
+      value_marker = "[N items]" → array collapsed by --depth
+      value_marker = <Any>       → primitive value (None means JSON null)
+
+    max_depth: if set, containers at this depth are shown as summaries.
+    Array indices do NOT count toward depth; only object key access does.
     """
     rows = []
     if isinstance(data, dict):
-        rows.append((path, "object", None if data else "(empty)"))
-        for k, v in data.items():
-            child = k if root_level else f"{path}.{k}"
-            rows.extend(flatten(v, child, False))
+        if max_depth is not None and _depth >= max_depth and not root_level:
+            n = len(data)
+            summary = f"{{{n} key{'s' if n != 1 else ''}}}"
+            rows.append((path, "object", summary))
+        else:
+            rows.append((path, "object", None if data else "(empty)"))
+            for k, v in data.items():
+                child = k if root_level else f"{path}.{k}"
+                rows.extend(flatten(v, child, False, max_depth, _depth + 1))
     elif isinstance(data, list):
-        rows.append((path, "array", None if data else "(empty)"))
-        for i, v in enumerate(data):
-            rows.extend(flatten(v, f"{path}[{i}]", False))
+        if max_depth is not None and _depth >= max_depth and not root_level:
+            n = len(data)
+            summary = f"[{n} item{'s' if n != 1 else ''}]"
+            rows.append((path, "array", summary))
+        else:
+            rows.append((path, "array", None if data else "(empty)"))
+            for i, v in enumerate(data):
+                # array indices do not increment depth
+                rows.extend(flatten(v, f"{path}[{i}]", False, max_depth, _depth))
     else:
         rows.append((path, get_type_name(data), data))
     return rows
@@ -230,6 +247,10 @@ def print_row(path: str, type_name: str, value):
         print(f"{p} {t}")
     elif value == "(empty)":
         print(f"{p} {t} {C_EMPTY}(empty){C_RESET}")
+    elif (isinstance(value, str)
+          and type_name in ("object", "array")
+          and value.startswith(("{", "["))):
+        print(f"{p} {t} {C_DIM}{value}{C_RESET}")
     elif value == "(null)":
         if type_name == "unknown":
             print(f"{p} {C_UNINF}{type_name}{C_RESET} {C_UNINF}(null){C_RESET}")
@@ -245,8 +266,9 @@ def cmd_view(data: Any, schema: bool = False,
              limit: Optional[int] = None,
              offset: int = 0,
              elem_offset: int = 0,
-             elem_limit: Optional[int] = None):
-    rows = infer_nulls(flatten(data))
+             elem_limit: Optional[int] = None,
+             max_depth: Optional[int] = None):
+    rows = infer_nulls(flatten(data, max_depth=max_depth))
 
     if schema:
         rows = schema_rows(rows)
@@ -1114,7 +1136,7 @@ def usage():
     print(f"{U}jstool{R} - JSON flat view and edit tool")
     print()
     print(f"{U}USAGE{R}")
-    print(f"  jstool view   [file] [-s] [-F <path>] [-n <N>] [-O <N>] [-E <N>] [-L <N>]")
+    print(f"  jstool view   [file] [-s] [-F <path>] [-n <N>] [-O <N>] [-E <N>] [-L <N>] [-d <N>]")
     print(f"  jstool schema [file] [--title <title>]")
     print(f"  jstool set    <path> <value> [file] [-f]")
     print(f"  jstool <path> = <value> [file] [-f]          {D}# B-style{R}")
@@ -1125,6 +1147,7 @@ def usage():
     print()
     print(f"{U}FLAGS{R}")
     print(f"  -f   Apply change to file (default: preview only)")
+    print(f"  -d N Collapse containers beyond depth N (view only; array indices don't count)")
     print()
     print(f"{U}PATHS{R}")
     print(f"  root              root node")
@@ -1173,13 +1196,14 @@ def main():
 
     # ── view ──────────────────────────────────────────────────────────────────
     if cmd == "view":
-        # Options: [-s] [-F <path>] [-n <N>] [-O <N>] [-E <N>] [-L <N>] [file]
+        # Options: [-s] [-F <path>] [-n <N>] [-O <N>] [-E <N>] [-L <N>] [-d <N>] [file]
         schema      = pop_flag(rest, "-s")
         filter_path = None
         limit       = None
         offset      = 0
         elem_offset = 0
         elem_limit  = None
+        max_depth   = None
 
         # Parse options (may appear in any order)
         i = 0
@@ -1196,6 +1220,8 @@ def main():
                 elem_offset = int(rest[i + 1]); i += 2
             elif a == "-L" and i + 1 < len(rest):
                 elem_limit = int(rest[i + 1]); i += 2
+            elif a == "-d" and i + 1 < len(rest):
+                max_depth = int(rest[i + 1]); i += 2
             else:
                 positional.append(a); i += 1
 
@@ -1203,7 +1229,8 @@ def main():
         data, _ = read_json(file_arg)
         cmd_view(data, schema=schema, filter_path=filter_path,
                  limit=limit, offset=offset,
-                 elem_offset=elem_offset, elem_limit=elem_limit)
+                 elem_offset=elem_offset, elem_limit=elem_limit,
+                 max_depth=max_depth)
 
     # ── schema ────────────────────────────────────────────────────────────────
     elif cmd == "schema":
