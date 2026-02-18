@@ -73,6 +73,14 @@ ls .issues/templates/
 
 ### 5. 提交 Issue 文件到 Git
 
+**首先检查项目的 commit 规范**，优先级从高到低：
+
+1. `CLAUDE.md` / `AGENTS.md` — AI agent 专属规范
+2. `CONTRIBUTING.md` — 项目贡献规范
+3. `git log --oneline` — 从历史提交归纳风格
+
+在没有任何规范的情况下，才使用以下格式作为兜底：
+
 ```bash
 git add .issues/open/{filename}.md
 git commit -m "docs: add issue #{NNN} - {简短描述}"
@@ -96,7 +104,7 @@ git commit -m "docs: add issue #{NNN} - {简短描述}"
    - 新增 `Closed: {YYYY-MM-DD}` 字段
    - 补充进展记录和解决总结
 
-2. 移动并提交：
+2. 移动并提交（遵循项目 commit 规范，以下为兜底格式）：
 ```bash
 mv .issues/open/{NNN}-*.md .issues/closed/
 git add .issues/
@@ -106,6 +114,8 @@ Closes #{NNN}"
 ```
 
 ## Git Commit 引用规范
+
+以下为通用参考，**项目自有规范优先**：
 
 - Issue 创建：`docs: add issue #{NNN} - {描述}`
 - 功能提交：`feat: #{NNN} - {描述}` 或 `fix: #{NNN} - {描述}`
