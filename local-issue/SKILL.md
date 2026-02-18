@@ -5,7 +5,9 @@ description: "本地文件系统 issue 管理。Use when the user wants to creat
 
 # Local Issue Skill
 
-在本地文件系统创建 issue，并立即开始处理。
+> Everything is a file.
+
+Issue 即 Markdown 文件，存于版本控制之中。无服务、无网络、无 API——每一条 issue 都是可被 `grep`、`cat`、`git log` 直接操作的纯文本。这让 agent 能像处理代码一样处理任务上下文：跨 issue 全文搜索、批量提取状态、在同一次 commit 中同时更新代码与 issue 进展，一切工具链天然适配。
 
 ## Issue 系统位置
 
