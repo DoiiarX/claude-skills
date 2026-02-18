@@ -43,6 +43,7 @@ Omit `[file]` to read from stdin.
 | `-O <N>` | rows | Skip first N rows |
 | `-E <N>` | elements | Skip first N array elements (use with `-F`) |
 | `-L <N>` | elements | Show at most N array elements (use with `-F`) |
+| `-d <N>` | depth | Collapse containers deeper than N levels (object key depth; array indices don't count) |
 
 `-E` and `-L` are element-aware and never cut an element in the middle.
 
@@ -87,10 +88,12 @@ users[0].age integer 30
 users[1].age integer (null)    ← magenta: null with inferred type
 orphan unknown (null)          ← red: null, type unknown
 meta object (empty)            ← dim: empty container
+config object {3 keys}         ← dim: collapsed by -d
+tags array [12 items]          ← dim: collapsed by -d
 ```
 
 Colors: cyan = path, yellow = type, green = value,
-        magenta = inferred null, red = unknown/delete, dim = empty.
+        magenta = inferred null, red = unknown/delete, dim = empty/collapsed.
 
 ## Workflow
 
@@ -105,6 +108,12 @@ python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -F "data[0].bid
 
 # Infer JSON Schema Draft 7
 python3 ~/.claude/skills/json-flat-tool/jstool.py schema data.json --title "My API"
+
+# Depth-limited view: collapse containers beyond 2 key levels
+python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -d 2
+
+# Combine with filter: expand just one branch while keeping others collapsed
+python3 ~/.claude/skills/json-flat-tool/jstool.py view data.json -d 1 -F users
 ```
 
 ### Edit a JSON file
@@ -207,3 +216,5 @@ curl https://api.example.com/data | python3 ~/.claude/skills/json-flat-tool/jsto
 - `merge` for non-dict targets replaces the value entirely (patch wins).
 - `find -g` uses `fnmatch` (full-string wildcard): use `*api*` not `api*` for substring matching.
 - `find` without `-g` uses Python `re.search` (substring regex by default).
+- `-d N` only affects the flat view display; schema inference and edit commands are unaffected.
+- `-d N` depth counts object key traversals only — array indices (`[0]`, `[1]`, …) do not increment depth.
