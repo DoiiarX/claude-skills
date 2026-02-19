@@ -108,6 +108,48 @@ npx skills add DoiiarX/claude-skills@local-issue
 
 ---
 
+### [multipar-cli](./multipar-cli/)
+
+Comprehensive guide for MultiPar CLI - PAR2 recovery file creation and verification tool.
+
+**Features:**
+- **PAR2 Creation** — create recovery files with configurable redundancy (5-100%)
+- **File Verification** — detect corruption using parity data
+- **Automatic Repair** — restore damaged files from recovery blocks
+- **Batch Processing** — automate verification and repair workflows
+- **Redundancy Optimization** — tune block sizes and memory usage
+- **Scripting Examples** — Bash, Batch, and Python automation templates
+- **Integration Patterns** — rsync, 7-Zip, and cloud storage workflows
+- **Best Practices** — redundancy strategies, verification schedules, storage recommendations
+- **Troubleshooting** — common issues, error codes, performance tuning
+
+**Install:**
+```bash
+npx skills add DoiiarX/claude-skills@multipar-cli
+```
+
+**Quick start:**
+```bash
+# Create PAR2 with 10% redundancy
+par2j64.exe c -r10 backup.par2 files/*
+
+# Verify files
+par2j64.exe v backup.par2
+
+# Repair damaged files
+par2j64.exe r backup.par2
+
+# High redundancy for critical data
+par2j64.exe c -r50 critical.par2 important_files/*
+
+# Automated verification script
+for par2 in *.par2; do
+  par2j64.exe v -q "$par2" && echo "✓ $par2" || echo "✗ $par2"
+done
+```
+
+---
+
 ## Installation
 
 Skills are installed via the [Skills CLI](https://skills.sh/):
