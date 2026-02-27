@@ -8,6 +8,15 @@ A collection of Claude Code skills for extending agent capabilities.
 
 A single-script tool (`jstool.py`) for viewing, inspecting, and editing JSON data.
 
+**Auto-triggers on:**
+- JSON files on disk — view, inspect, search
+- JSON config files — `config.json`, `settings.json`, `package.json`, `tsconfig.json`, etc.
+- Editing / modifying fields in any JSON file — set key, delete key, insert array element
+- HTTP / REST API responses — curl output, Postman captures, fetch() results
+- WebSocket (WSS) message payloads — frames captured from browser DevTools or a proxy
+- Orderbook / market-data snapshots — CLOB, AMM, streaming events, RPC responses
+- Inline JSON pasted directly into chat
+
 **Features:**
 - **Flat path/type/value view** — every field on one line: `users[0].name string Alice`
 - **Schema mode** (`-s`) — collapses arrays, deduplicates, hides values
@@ -75,6 +84,14 @@ python3 ~/.claude/skills/json-flat-tool/jstool.py find apiKey config.json -k
 python3 ~/.claude/skills/json-flat-tool/jstool.py find "sk-.*" config.json -v
 python3 ~/.claude/skills/json-flat-tool/jstool.py find "APIKEY" config.json -k -i
 python3 ~/.claude/skills/json-flat-tool/jstool.py find "*api*" config.json -k -g -i
+
+# HTTP API response — fetch and inspect inline
+curl -s https://api.example.com/markets | \
+  python3 ~/.claude/skills/json-flat-tool/jstool.py view -s
+
+# WebSocket capture — save frame to temp file and inspect
+echo '{"type":"book","market":"..."}' > /tmp/wss.json
+python3 ~/.claude/skills/json-flat-tool/jstool.py view /tmp/wss.json -s
 
 # Pipe / stdin
 echo '{"name":"Alice"}' | python3 ~/.claude/skills/json-flat-tool/jstool.py view
