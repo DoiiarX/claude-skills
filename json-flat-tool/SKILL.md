@@ -1,6 +1,38 @@
 ---
 name: json-flat-tool
-description: "JSON flat view, schema inference, and edit tool. Use when the user provides a JSON file or data and wants to explore its structure, infer its schema, or modify fields. Triggers on: view json, edit json, json schema, json structure, set json field, jstool, analyze json, flat view, orderbook, json flat."
+description: >
+  JSON flat view, schema inference, and edit tool.
+  Use when the user provides JSON data in ANY form and wants to explore its
+  structure, infer its schema, modify fields, or edit configuration files.
+  This includes:
+  - JSON files on disk (view, inspect, search)
+  - JSON configuration files (config.json, settings.json, package.json,
+    appsettings.json, tsconfig.json, .eslintrc, any *.json config)
+  - Editing / updating fields in a JSON file (set key, delete key, insert
+    array element, bulk update, modify nested value)
+  - Inline JSON pasted into chat
+  - HTTP / REST API responses (curl output, Postman captures, fetch() results)
+  - WebSocket (WSS) message payloads captured from a browser or proxy
+  - Polymarket or any exchange orderbook / market-data snapshots
+  - Any API protocol payload (CLOB, AMM, streaming events, RPC responses)
+  Triggers on: view json, edit json, json schema, json structure, set json
+  field, jstool, analyze json, flat view, orderbook, json flat,
+  modify json, update json, change json, json config, edit config,
+  modify config, update config, set config field, change config,
+  config.json, settings.json, package.json, tsconfig.json,
+  delete json field, insert json, add json key, json edit,
+  api response, http response, rest api json, websocket message,
+  wss payload, ws frame, api payload, protocol message, clob orderbook,
+  market data json, analyze api, inspect response, parse response.
+allowed-tools: Bash
+argument-hint: "[json-file | - (stdin) | inline JSON | api-url]"
+hooks:
+  PreToolUse:
+    - matcher: "Bash(python3 *jstool*)"
+      hooks:
+        - type: command
+          command: "echo '[jstool] running'"
+          async: true
 ---
 
 # JSON Flat Tool
@@ -202,6 +234,87 @@ python3 ~/.claude/skills/json-flat-tool/jstool.py find "*api*" config.json -k -g
 echo '{"name":"Alice"}' | python3 ~/.claude/skills/json-flat-tool/jstool.py view
 curl https://api.example.com/data | python3 ~/.claude/skills/json-flat-tool/jstool.py schema
 ```
+
+---
+
+## HTTP API & WebSocket Analysis
+
+**This skill should be invoked automatically whenever the user pastes an API response, curl output, WSS frame, or asks to analyze any protocol-level JSON payload.**
+
+### Analyze an HTTP API response
+
+```bash
+# Fetch and immediately explore structure
+curl -s https://api.example.com/markets | \
+  python3 ~/.claude/skills/json-flat-tool/jstool.py view -s
+
+# Infer schema from a REST endpoint
+curl -s https://api.example.com/orderbook/BTC-USD | \
+  python3 ~/.claude/skills/json-flat-tool/jstool.py schema --title "Orderbook API"
+
+# Save the raw response, then explore interactively
+curl -s https://api.example.com/events > /tmp/events.json
+python3 ~/.claude/skills/json-flat-tool/jstool.py view /tmp/events.json -d 2
+
+# Search for a specific field across the response
+curl -s https://api.example.com/data | \
+  python3 ~/.claude/skills/json-flat-tool/jstool.py find "price" -k
+```
+
+### Analyze a WebSocket (WSS) message capture
+
+When a user pastes a raw WebSocket frame payload or a captured `.json` log:
+
+```bash
+# Paste the captured WSS JSON into a temp file, then inspect
+echo '<paste-wss-frame-here>' > /tmp/wss_frame.json
+python3 ~/.claude/skills/json-flat-tool/jstool.py view /tmp/wss_frame.json -s
+
+# Compare schema across multiple frames (batch via stdin)
+cat wss_frames/*.json | jq -s '.' | \
+  python3 ~/.claude/skills/json-flat-tool/jstool.py schema --title "WSS Message Schema"
+
+# Find volatile / changing fields (paginate through a large frame log)
+python3 ~/.claude/skills/json-flat-tool/jstool.py view wss_log.json -F "data" -E 0 -L 5
+```
+
+### Orderbook / market-data snapshots
+
+```bash
+# Explore top-level structure
+python3 ~/.claude/skills/json-flat-tool/jstool.py view orderbook.json -d 1
+
+# Drill into bids/asks with element-aware pagination
+python3 ~/.claude/skills/json-flat-tool/jstool.py view orderbook.json -F "bids" -L 10
+python3 ~/.claude/skills/json-flat-tool/jstool.py view orderbook.json -F "asks" -L 10
+
+# Infer schema to understand field types
+python3 ~/.claude/skills/json-flat-tool/jstool.py schema orderbook.json --title "CLOB Orderbook"
+```
+
+### Tips for API / protocol analysis
+
+| Scenario | Recommended command |
+|---|---|
+| Unknown response shape | `view -s` (schema mode) |
+| Large paginated list | `view -F <array-path> -E <skip> -L <count>` |
+| Find auth / key fields | `find "token\|key\|secret\|auth" -k -i` |
+| Understand field types | `schema --title "<endpoint-name>"` |
+| Diff two responses | save both → `set` / `merge` preview |
+| WSS frame with nested events | `view -d 2` then `view -F <event-path>` |
+
+### Inline JSON from chat
+
+When the user pastes raw JSON directly into the conversation, save it to a temp file:
+
+```bash
+cat > /tmp/api_payload.json << 'EOF'
+<paste JSON here>
+EOF
+python3 ~/.claude/skills/json-flat-tool/jstool.py view /tmp/api_payload.json -s
+```
+
+---
 
 ## Notes
 
