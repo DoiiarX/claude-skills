@@ -102,7 +102,7 @@ curl https://api.example.com/data | python3 ~/.claude/skills/json-flat-tool/jsto
 
 ### [local-issue](./local-issue/)
 
-本地 issue 文件系统管理工具，用于创建和跟踪项目任务。
+本地 issue 文件系统管理工具，用于创建和跟踪项目任务。Issue 即 Markdown 文件，存于版本控制之中，无服务、无网络、无 API。
 
 **Features:**
 - **自动编号** — 扫描 open/closed 目录，自动分配下一个编号
@@ -110,6 +110,9 @@ curl https://api.example.com/data | python3 ~/.claude/skills/json-flat-tool/jsto
 - **模板化内容** — 根据类型自动生成对应章节结构
 - **Git 集成** — 自动提交 issue 文件，规范引用格式
 - **即时处理** — 创建后立即开始分析和实现
+- **`list`** — 按 type 分组列出 issues，支持 `--state open|closed|all` / `--type` / `--priority` / `--limit` 过滤
+- **`status`** — 详细仪表盘：总计数、type 分布、priority 分布、最近更新、最近 issue 相关 commits
+- **`log`** — Git-style commit 历史：`log` 列出所有引用 issue 的 commits；`log #NNN` 查看指定 issue 的完整 commit 时间线
 
 **Install:**
 ```bash
@@ -121,6 +124,14 @@ npx skills add DoiiarX/claude-skills@local-issue
 /new-issue 记录 WebSocket 断线重连 bug
 /new-issue 添加历史推文拉取功能
 /new-issue 重构 plugin manager 依赖解析
+```
+
+```
+list issues
+list issues --state closed --type bug
+issue status
+issue log
+issue log #064
 ```
 
 ---
