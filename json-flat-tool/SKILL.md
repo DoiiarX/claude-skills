@@ -2,6 +2,9 @@
 name: json-flat-tool
 description: >
   JSON flat view, schema inference, and edit tool.
+
+  ⚠️ CRITICAL: ALWAYS use jstool for JSON files - NEVER use read/edit/cat on *.json!
+
   Use when the user provides JSON data in ANY form and wants to explore its
   structure, infer its schema, modify fields, or edit configuration files.
   This includes:
@@ -26,27 +29,14 @@ description: >
   market data json, analyze api, inspect response, parse response.
 allowed-tools: Bash
 argument-hint: "[json-file | - (stdin) | inline JSON | api-url]"
-hooks:
-  # 拦截 JSON 文件读取操作，提醒使用 jstool
-  PreToolUse:
-    - matcher: 'read(*.json)'
-      hooks:
-        - type: respond
-          message: |
-            ⚠️ 检测到 JSON 文件读取，建议使用 json-flat-tool:
-            python3 ~/.claude/skills/json-flat-tool/jstool.py view <file> -s
-    - matcher: 'edit(*.json)'
-      hooks:
-        - type: respond
-          message: |
-            ⚠️ 检测到 JSON 文件编辑，建议使用 json-flat-tool:
-            python3 ~/.claude/skills/json-flat-tool/jstool.py set <path> <value> <file> -f
-    - matcher: 'Bash(cat *.json)'
-      hooks:
-        - type: respond
-          message: |
-            ⚠️ 检测到 JSON 文件查看，建议使用 json-flat-tool:
-            python3 ~/.claude/skills/json-flat-tool/jstool.py view <file> -s
+
+⚠️ **MANDATORY: Use jstool instead of read/edit/cat for JSON files!**
+
+Before using read/edit on *.json files, ask yourself:
+ "Should I use jstool instead?"
+  - View: `python3 ~/.agents/skills/json-flat-tool/jstool.py view <file> -s`
+  - Edit: `python3 ~/.agents/skills/json-flat-tool/jstool.py set <path> <value> <file> -f`
+  - Search: `python3 ~/.agents/skills/json-flat-tool/jstool.py find <pattern> <file>`
 ---
 
 # JSON Flat Tool
