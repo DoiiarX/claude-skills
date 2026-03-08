@@ -27,12 +27,26 @@ description: >
 allowed-tools: Bash
 argument-hint: "[json-file | - (stdin) | inline JSON | api-url]"
 hooks:
+  # 拦截 JSON 文件读取操作，提醒使用 jstool
   PreToolUse:
-    - matcher: "Bash(python3 *jstool*)"
+    - matcher: 'read(*.json)'
       hooks:
-        - type: command
-          command: "echo '[jstool] running'"
-          async: true
+        - type: respond
+          message: |
+            ⚠️ 检测到 JSON 文件读取，建议使用 json-flat-tool:
+            python3 ~/.claude/skills/json-flat-tool/jstool.py view <file> -s
+    - matcher: 'edit(*.json)'
+      hooks:
+        - type: respond
+          message: |
+            ⚠️ 检测到 JSON 文件编辑，建议使用 json-flat-tool:
+            python3 ~/.claude/skills/json-flat-tool/jstool.py set <path> <value> <file> -f
+    - matcher: 'Bash(cat *.json)'
+      hooks:
+        - type: respond
+          message: |
+            ⚠️ 检测到 JSON 文件查看，建议使用 json-flat-tool:
+            python3 ~/.claude/skills/json-flat-tool/jstool.py view <file> -s
 ---
 
 # JSON Flat Tool
