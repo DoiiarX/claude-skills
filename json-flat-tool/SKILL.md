@@ -38,10 +38,6 @@ Before using read/edit on *.json files, ask yourself:
   - Edit: `python3 ~/.agents/skills/json-flat-tool/jstool.py set <path> <value> <file> -f`
   - Search: `python3 ~/.agents/skills/json-flat-tool/jstool.py find <pattern> <file>`
 
----
-# Note: Skill-level hooks (NOT SUPPORTED by OpenClaw)
-# These are kept as documentation of intended behavior, but will NOT trigger.
-# OpenClaw only supports Gateway-level hooks, not skill-level hooks.
 hooks:
   PreToolUse:
     - matcher: 'read(*.json)'
