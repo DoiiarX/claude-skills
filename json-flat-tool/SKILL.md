@@ -29,15 +29,6 @@ description: >
   market data json, analyze api, inspect response, parse response.
 allowed-tools: Bash
 argument-hint: "[json-file | - (stdin) | inline JSON | api-url]"
-
-⚠️ **MANDATORY: Use jstool instead of read/edit/cat for JSON files!**
-
-Before using read/edit on *.json files, ask yourself:
- "Should I use jstool instead?"
-  - View: `python3 ~/.agents/skills/json-flat-tool/jstool.py view <file> -s`
-  - Edit: `python3 ~/.agents/skills/json-flat-tool/jstool.py set <path> <value> <file> -f`
-  - Search: `python3 ~/.agents/skills/json-flat-tool/jstool.py find <pattern> <file>`
-
 hooks:
   PreToolUse:
     - matcher: 'read(*.json)'
@@ -59,9 +50,18 @@ hooks:
             ⚠️ JSON file detected! Use jstool instead:
             python3 ~/.agents/skills/json-flat-tool/jstool.py view <file> -s
 ---
----
 
 # JSON Flat Tool
+
+⚠️ **MANDATORY: Use jstool instead of read/edit/cat for JSON files!**
+
+Before using read/edit on *.json files, ask yourself:
+ "Should I use jstool instead?"
+  - View: `python3 ~/.agents/skills/json-flat-tool/jstool.py view <file> -s`
+  - Edit: `python3 ~/.agents/skills/json-flat-tool/jstool.py set <path> <value> <file> -f`
+  - Search: `python3 ~/.agents/skills/json-flat-tool/jstool.py find <pattern> <file>`
+
+---
 
 A single-script tool (`jstool.py`) for viewing, inspecting, and editing JSON data.
 
