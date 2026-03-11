@@ -29,26 +29,6 @@ description: >
   market data json, analyze api, inspect response, parse response.
 allowed-tools: Bash
 argument-hint: "[json-file | - (stdin) | inline JSON | api-url]"
-hooks:
-  PreToolUse:
-    - matcher: 'read(*.json)'
-      hooks:
-        - type: respond
-          message: |
-            ⚠️ JSON file detected! Use jstool instead:
-            python3 ~/.agents/skills/json-flat-tool/jstool.py view <file> -s
-    - matcher: 'edit(*.json)'
-      hooks:
-        - type: respond
-          message: |
-            ⚠️ JSON file detected! Use jstool instead:
-            python3 ~/.agents/skills/json-flat-tool/jstool.py set <path> <value> <file> -f
-    - matcher: 'Bash(cat *.json)'
-      hooks:
-        - type: respond
-          message: |
-            ⚠️ JSON file detected! Use jstool instead:
-            python3 ~/.agents/skills/json-flat-tool/jstool.py view <file> -s
 ---
 
 # JSON Flat Tool
@@ -60,6 +40,14 @@ Before using read/edit on *.json files, ask yourself:
   - View: `python3 ~/.agents/skills/json-flat-tool/jstool.py view <file> -s`
   - Edit: `python3 ~/.agents/skills/json-flat-tool/jstool.py set <path> <value> <file> -f`
   - Search: `python3 ~/.agents/skills/json-flat-tool/jstool.py find <pattern> <file>`
+
+> **Note on hooks**: This skill previously attempted to use PreToolUse hooks to intercept
+> Read/Edit calls on JSON files. However, Claude Code hooks cannot match on tool arguments
+> (like file extensions). According to the [Claude Code Hooks Reference](https://code.claude.com/docs/en/hooks.md),
+> matchers only support tool name patterns (e.g., `"Read"`, `"Edit"`), not argument-based
+> filtering (e.g., `"read(*.json)"`). Additionally, the `respond` hook type does not exist;
+> valid types are: `command`, `http`, `prompt`, `agent`. For argument-level validation,
+> hooks must use a `command` script that parses `tool_input` JSON.
 
 ---
 
