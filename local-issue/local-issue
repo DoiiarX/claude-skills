@@ -1,0 +1,513 @@
+#!/usr/bin/env python3
+"""
+local-issue - File-based issue management CLI
+
+Designed for agent-friendly, non-interactive operation.
+"""
+
+import sys
+import re
+import argparse
+import subprocess
+from pathlib import Path
+from datetime import datetime
+from collections import defaultdict
+
+
+PLACEHOLDER_TEMPLATE = """# [Placeholder] Issue #{issue_id}
+
+**Issue ID**: #{issue_id}
+**Status**: Placeholder
+**Created**: {date}
+
+---
+
+## Note
+
+This is a placeholder file created to reserve issue ID #{issue_id}.
+
+**Action required**: Rename this file to the actual issue filename format:
+`{issue_id}-{{type}}-{{description}}.md`
+
+Where:
+- {{type}} = bug | feature | refactor
+- {{description}} = short-description-with-hyphens
+
+Example: `{issue_id}-bug-websocket-timeout.md`
+"""
+
+
+def find_issues_dir(start_path: Path = None) -> Path:
+    """Find .issues directory in current or parent directories."""
+    current = start_path or Path.cwd()
+    while current != current.parent:
+        issues_dir = current / ".issues"
+        if issues_dir.is_dir():
+            return issues_dir
+        current = current.parent
+    return Path(".issues")
+
+
+def next_issue_id(issues_dir: Path) -> str:
+    """Find the next available issue ID."""
+    max_id = 0
+    for subdir in ("open", "closed"):
+        d = issues_dir / subdir
+        if not d.is_dir():
+            continue
+        for f in d.iterdir():
+            m = re.match(r"^(\d+)", f.name)
+            if m:
+                max_id = max(max_id, int(m.group(1)))
+    return f"{max_id + 1:03d}"
+
+
+def create_placeholder(issues_dir: Path, issue_id: str, dry_run: bool = False) -> Path:
+    """Create a placeholder file to reserve the issue ID."""
+    open_dir = issues_dir / "open"
+    placeholder_path = open_dir / f"{issue_id}-placeholder.md"
+
+    if placeholder_path.exists():
+        print(f"Error: Placeholder already exists: {placeholder_path}", file=sys.stderr)
+        print(f"Hint: Run 'local-issue next' again to get the next available ID.", file=sys.stderr)
+        sys.exit(1)
+
+    if dry_run:
+        return placeholder_path
+
+    open_dir.mkdir(parents=True, exist_ok=True)
+    content = PLACEHOLDER_TEMPLATE.format(
+        issue_id=issue_id,
+        date=datetime.now().strftime("%Y-%m-%d")
+    )
+    placeholder_path.write_text(content, encoding="utf-8")
+    return placeholder_path
+
+
+def parse_issue_file(filepath: Path) -> dict:
+    """Parse issue file to extract metadata."""
+    try:
+        content = filepath.read_text(encoding="utf-8")
+
+        # Extract from filename: NNN-type-description.md
+        match = re.match(r"^(\d+)-([^-]+)-(.+)\.md$", filepath.name)
+        if match:
+            issue_id, issue_type, description = match.groups()
+        else:
+            issue_id = re.match(r"^(\d+)", filepath.name).group(1) if re.match(r"^(\d+)", filepath.name) else "???"
+            issue_type = "unknown"
+            description = filepath.stem
+
+        # Extract priority from content
+        priority_match = re.search(r"\*\*Priority\*\*:\s*(\w+)", content)
+        priority = priority_match.group(1) if priority_match else None
+
+        # Extract status
+        status_match = re.search(r"\*\*Status\*\*:\s*([^\n]+)", content)
+        status = status_match.group(1).strip() if status_match else "Unknown"
+
+        # Extract dates
+        created_match = re.search(r"\*\*Created\*\*:\s*(\d{4}-\d{2}-\d{2})", content)
+        created = created_match.group(1) if created_match else None
+
+        updated_match = re.search(r"\*\*Updated\*\*:\s*(\d{4}-\d{2}-\d{2})", content)
+        updated = updated_match.group(1) if updated_match else None
+
+        return {
+            "id": issue_id,
+            "type": issue_type,
+            "description": description,
+            "priority": priority,
+            "status": status,
+            "created": created,
+            "updated": updated,
+            "filepath": filepath
+        }
+    except Exception as e:
+        return {
+            "id": "???",
+            "type": "unknown",
+            "description": filepath.name,
+            "priority": None,
+            "status": "Error",
+            "filepath": filepath
+        }
+
+
+def cmd_next(args):
+    """Reserve the next available issue ID."""
+    issues_dir = Path(args.issues_dir) if args.issues_dir else find_issues_dir()
+
+    if not issues_dir.exists():
+        print(f"Error: Directory not found: {issues_dir}", file=sys.stderr)
+        print(f"Hint: Create with: mkdir -p {issues_dir}/{{open,closed}}", file=sys.stderr)
+        sys.exit(1)
+
+    issue_id = next_issue_id(issues_dir)
+
+    if args.query_only:
+        print(issue_id)
+        return
+
+    placeholder_path = create_placeholder(issues_dir, issue_id, dry_run=args.dry_run)
+
+    if args.quiet:
+        print(issue_id)
+    else:
+        print(issue_id)
+        if args.dry_run:
+            print(f"placeholder_path={placeholder_path} (dry-run)")
+        else:
+            print(f"placeholder_path={placeholder_path}")
+        if not args.quiet and not args.dry_run:
+            print(f"# Next: Rename to {issue_id}-{{type}}-{{description}}.md", file=sys.stderr)
+
+
+def cmd_list(args):
+    """List issues."""
+    issues_dir = Path(args.issues_dir) if args.issues_dir else find_issues_dir()
+
+    if not issues_dir.exists():
+        print(f"Error: Directory not found: {issues_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    # Determine which directories to scan
+    dirs_to_scan = []
+    if args.state in ("open", "all"):
+        dirs_to_scan.append(("open", issues_dir / "open"))
+    if args.state in ("closed", "all"):
+        dirs_to_scan.append(("closed", issues_dir / "closed"))
+
+    # Collect issues
+    issues = []
+    for state, dir_path in dirs_to_scan:
+        if not dir_path.is_dir():
+            continue
+        for filepath in dir_path.iterdir():
+            if not filepath.name.endswith(".md"):
+                continue
+            issue = parse_issue_file(filepath)
+            issue["state"] = state
+
+            # Apply filters
+            if args.type and issue["type"] != args.type:
+                continue
+            if args.priority and issue["priority"] != args.priority.capitalize():
+                continue
+
+            issues.append(issue)
+
+    # Sort: by type, then by priority (High > Medium > Low > None), then by ID
+    priority_order = {"High": 0, "Medium": 1, "Low": 2, None: 3}
+    issues.sort(key=lambda x: (x["type"], priority_order.get(x["priority"], 3), x["id"]))
+
+    # Apply limit
+    if args.limit:
+        issues = issues[:args.limit]
+
+    # Output
+    if args.quiet:
+        # Machine-readable: just IDs
+        for issue in issues:
+            print(issue["id"])
+    else:
+        # Group by state
+        for state in ["open", "closed"]:
+            state_issues = [i for i in issues if i["state"] == state]
+            if not state_issues:
+                continue
+
+            print(f"\n{state.capitalize()} Issues ({len(state_issues)})")
+            print()
+
+            # Group by type
+            by_type = defaultdict(list)
+            for issue in state_issues:
+                by_type[issue["type"]].append(issue)
+
+            for issue_type, type_issues in sorted(by_type.items()):
+                print(f"[{issue_type}] {len(type_issues)}")
+                for issue in type_issues:
+                    priority_str = issue["priority"] if issue["priority"] else "-"
+                    print(f"  #{issue['id']}  {priority_str:8s}  {issue['description']}")
+                print()
+
+
+def cmd_status(args):
+    """Show detailed status summary."""
+    issues_dir = Path(args.issues_dir) if args.issues_dir else find_issues_dir()
+
+    if not issues_dir.exists():
+        print(f"Error: Directory not found: {issues_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    # Count issues
+    open_dir = issues_dir / "open"
+    closed_dir = issues_dir / "closed"
+
+    open_count = len(list(open_dir.glob("*.md"))) if open_dir.is_dir() else 0
+    closed_count = len(list(closed_dir.glob("*.md"))) if closed_dir.is_dir() else 0
+    total_count = open_count + closed_count
+
+    # Collect open issues for analysis
+    open_issues = []
+    if open_dir.is_dir():
+        for filepath in open_dir.iterdir():
+            if filepath.name.endswith(".md"):
+                open_issues.append(parse_issue_file(filepath))
+
+    # Count by type
+    by_type = defaultdict(int)
+    for issue in open_issues:
+        by_type[issue["type"]] += 1
+
+    # Count by priority
+    by_priority = defaultdict(int)
+    for issue in open_issues:
+        priority = issue["priority"] or "(unset)"
+        by_priority[priority] += 1
+
+    # Recently updated (by mtime)
+    recent_issues = sorted(open_issues, key=lambda x: x["filepath"].stat().st_mtime, reverse=True)[:5]
+
+    # Recent commits
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", "--grep=#[0-9]", "-10"],
+            capture_output=True,
+            text=True,
+            cwd=issues_dir.parent
+        )
+        recent_commits = result.stdout.strip().split("\n") if result.returncode == 0 else []
+    except:
+        recent_commits = []
+
+    # Output
+    print("─" * 45)
+    print(f"Issue Status                  {datetime.now().strftime('%Y-%m-%d')}")
+    print("─" * 45)
+    print(f"Open: {open_count}    Closed: {closed_count}    Total: {total_count}")
+    print()
+
+    if by_type:
+        print("By Type (open)")
+        for issue_type, count in sorted(by_type.items()):
+            pct = count / open_count * 100 if open_count > 0 else 0
+            bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
+            print(f"  {issue_type:12s} {count:3d}  {bar}  {pct:3.0f}%")
+        print()
+
+    if by_priority:
+        print("By Priority (open)")
+        for priority in ["High", "Medium", "Low", "(unset)"]:
+            count = by_priority.get(priority, 0)
+            pct = count / open_count * 100 if open_count > 0 else 0
+            bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
+            print(f"  {priority:12s} {count:3d}  {bar}  {pct:3.0f}%")
+        print()
+
+    if recent_issues:
+        print("Recently Updated (open)")
+        for issue in recent_issues:
+            mtime = datetime.fromtimestamp(issue["filepath"].stat().st_mtime).strftime("%Y-%m-%d")
+            print(f"  #{issue['id']}  {issue['type']:8s}  {issue['description'][:40]:40s}  {mtime}")
+        print()
+
+    if recent_commits:
+        print("Recent Issue Commits")
+        for commit in recent_commits[:5]:
+            if commit:
+                print(f"  {commit}")
+        print()
+
+    print("─" * 45)
+
+
+def cmd_log(args):
+    """Show git commit history for issues."""
+    issues_dir = Path(args.issues_dir) if args.issues_dir else find_issues_dir()
+
+    if not issues_dir.exists():
+        print(f"Error: Directory not found: {issues_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        if args.issue_id:
+            # Show commits for specific issue
+            pattern = f"#{args.issue_id}"
+            result = subprocess.run(
+                ["git", "log", "--oneline", f"--grep={pattern}", f"--format=%h  %ad  %s", "--date=short", f"-{args.limit}"],
+                capture_output=True,
+                text=True,
+                cwd=issues_dir.parent
+            )
+            commits = result.stdout.strip().split("\n") if result.returncode == 0 else []
+
+            if args.quiet:
+                for commit in commits:
+                    if commit:
+                        print(commit.split()[0])  # Just hash
+            else:
+                print(f"Commits referencing #{args.issue_id} ({len([c for c in commits if c])})")
+                for commit in commits:
+                    if commit:
+                        print(f"  {commit}")
+
+                # Find issue file
+                for state in ["open", "closed"]:
+                    pattern_path = issues_dir / state / f"{args.issue_id}-*.md"
+                    matches = list(Path(issues_dir / state).glob(f"{args.issue_id}-*.md"))
+                    if matches:
+                        issue = parse_issue_file(matches[0])
+                        print()
+                        print("── Issue ──────────────────────────────")
+                        print(f"  File:    {matches[0].relative_to(issues_dir.parent)}")
+                        print(f"  Status:  {issue['status']}")
+                        if issue['created']:
+                            print(f"  Created: {issue['created']}")
+                        break
+        else:
+            # Show all recent issue-related commits
+            result = subprocess.run(
+                ["git", "log", "--oneline", "--grep=#[0-9]", f"-{args.limit}"],
+                capture_output=True,
+                text=True,
+                cwd=issues_dir.parent
+            )
+            commits = result.stdout.strip().split("\n") if result.returncode == 0 else []
+
+            if args.quiet:
+                for commit in commits:
+                    if commit:
+                        print(commit.split()[0])
+            else:
+                print(f"Recent issue-related commits ({len([c for c in commits if c])})")
+                for commit in commits:
+                    if commit:
+                        # Extract issue number
+                        issue_match = re.search(r"#(\d+)", commit)
+                        issue_num = f"#{issue_match.group(1)}" if issue_match else "    "
+                        print(f"  {commit[:7]}  {issue_num:6s}  {commit[8:]}")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_help(args):
+    """Show help for a specific command or general help."""
+    if args.command_name:
+        # Show help for specific command
+        subprocess.run([sys.argv[0], args.command_name, "--help"])
+    else:
+        # Show general help
+        subprocess.run([sys.argv[0], "--help"])
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="File-based issue management CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # help command
+    help_parser = subparsers.add_parser(
+        "help",
+        help="Show help for commands",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  local-issue help
+  local-issue help next
+  local-issue help list
+        """
+    )
+    help_parser.add_argument("command_name", nargs="?", help="Command to show help for")
+    help_parser.set_defaults(func=cmd_help)
+
+    # next command
+    next_parser = subparsers.add_parser(
+        "next",
+        help="Reserve the next available issue ID",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  local-issue next
+  local-issue next --query-only
+  local-issue next --quiet
+  local-issue next /path/to/project/.issues
+  ISSUE_ID=$(local-issue next --quiet)
+        """
+    )
+    next_parser.add_argument("issues_dir", nargs="?", help="Path to .issues directory")
+    next_parser.add_argument("--query-only", action="store_true", help="Only query, don't create placeholder")
+    next_parser.add_argument("--dry-run", action="store_true", help="Preview without creating")
+    next_parser.add_argument("--quiet", "-q", action="store_true", help="Machine-readable output")
+    next_parser.set_defaults(func=cmd_next)
+
+    # list command
+    list_parser = subparsers.add_parser(
+        "list",
+        help="List issues",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  local-issue list
+  local-issue list --state open
+  local-issue list --type bug --priority High
+  local-issue list --limit 10 --quiet
+        """
+    )
+    list_parser.add_argument("issues_dir", nargs="?", help="Path to .issues directory")
+    list_parser.add_argument("--state", choices=["open", "closed", "all"], default="open", help="Issue state")
+    list_parser.add_argument("--type", choices=["bug", "feature", "refactor"], help="Filter by type")
+    list_parser.add_argument("--priority", choices=["high", "medium", "low"], help="Filter by priority")
+    list_parser.add_argument("--limit", type=int, default=30, help="Max issues to show")
+    list_parser.add_argument("--quiet", "-q", action="store_true", help="Only output IDs")
+    list_parser.set_defaults(func=cmd_list)
+
+    # status command
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show detailed status summary",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  local-issue status
+  local-issue status /path/to/project/.issues
+        """
+    )
+    status_parser.add_argument("issues_dir", nargs="?", help="Path to .issues directory")
+    status_parser.set_defaults(func=cmd_status)
+
+    # log command
+    log_parser = subparsers.add_parser(
+        "log",
+        help="Show git commit history for issues",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  local-issue log
+  local-issue log 047
+  local-issue log --limit 20
+  local-issue log 047 --quiet
+        """
+    )
+    log_parser.add_argument("issue_id", nargs="?", help="Specific issue ID (without #)")
+    log_parser.add_argument("issues_dir", nargs="?", help="Path to .issues directory")
+    log_parser.add_argument("--limit", type=int, default=20, help="Max commits to show")
+    log_parser.add_argument("--quiet", "-q", action="store_true", help="Only output commit hashes")
+    log_parser.set_defaults(func=cmd_log)
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
