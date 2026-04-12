@@ -63,11 +63,10 @@ done
 - 退出码 1：错误（目录不存在、占位文件已存在等）
 - 错误信息输出到 stderr，包含可操作的提示
 
-### 向后兼容
+### 移除的文件
 
-- 保留了原有的 `next-issue-id.py` 脚本（已更新为使用 argparse）
-- 可以继续使用 `python3 next-issue-id.py`，但推荐使用新的 `local-issue` CLI
-- 所有原有功能在新 CLI 中都有对应实现
+- 删除了 `next-issue-id.py` 脚本，完全由 `local-issue next` 命令替代
+- 统一使用 `local-issue` CLI 工具，避免维护多个入口点
 
 ### 安装
 
@@ -106,10 +105,9 @@ local-issue log 047
 
 ```
 local-issue/
-├── local-issue              # 统一 CLI 工具（新增）
-├── next-issue-id.py         # 原脚本（已更新，保留向后兼容）
-├── SKILL.md                 # 技能文档（已更新）
-├── CHANGELOG.md             # 本文件（新增）
+├── local-issue              # 统一 CLI 工具
+├── SKILL.md                 # 技能文档
+├── CHANGELOG.md             # 变更日志
 └── templates/
     ├── bug.md
     ├── feature.md
