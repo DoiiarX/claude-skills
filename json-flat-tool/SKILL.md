@@ -5,19 +5,33 @@ description: >
 
   ⚠️ CRITICAL: ALWAYS use jstool for JSON files - NEVER use read/edit/cat on *.json!
 
-  Use when the user provides JSON data in ANY form and wants to explore its
-  structure, infer its schema, modify fields, or edit configuration files.
+  **Strongest trigger — editing any JSON config file**: when the user asks to
+  change, add, set, update, or remove a field in a `.json` configuration
+  (config.json, settings.json, package.json, tsconfig.json, appsettings.json,
+  .eslintrc, openclaw.json, mcp.json, any tool's `*.json` config), invoke this
+  skill instead of opening the file in a text editor. Reading the whole file,
+  hand-editing braces, or rewriting it from memory all break formatting and
+  risk silent corruption — jstool gives you a structural diff preview before
+  applying.
+
+  Also use when the user provides JSON data in ANY form and wants to explore
+  its structure, infer its schema, modify fields, or search keys/values.
   This includes:
   - JSON files on disk (view, inspect, search)
-  - JSON configuration files (config.json, settings.json, package.json,
-    appsettings.json, tsconfig.json, .eslintrc, any *.json config)
-  - Editing / updating fields in a JSON file (set key, delete key, insert
-    array element, bulk update, modify nested value)
+  - JSON configuration files (any *.json config — see above)
+  - Editing / updating fields (set key, delete key, insert array element,
+    bulk update, modify nested value)
   - Inline JSON pasted into chat
   - HTTP / REST API responses (curl output, Postman captures, fetch() results)
   - WebSocket (WSS) message payloads captured from a browser or proxy
   - Polymarket or any exchange orderbook / market-data snapshots
   - Any API protocol payload (CLOB, AMM, streaming events, RPC responses)
+
+  Default behavior masks values whose key name looks like a secret (apiKey,
+  token, password, etc.); pass `-R` / `--reveal` to disable masking for one
+  invocation. Sensitive-key patterns and mask format live in
+  `<skill-dir>/config.json` and can be edited without touching code.
+
   Triggers on: view json, edit json, json schema, json structure, set json
   field, jstool, analyze json, flat view, orderbook, json flat,
   modify json, update json, change json, json config, edit config,
@@ -41,13 +55,12 @@ Before using read/edit on *.json files, ask yourself:
   - Edit: `python3 ~/.agents/skills/json-flat-tool/jstool.py set <path> <value> <file> -f`
   - Search: `python3 ~/.agents/skills/json-flat-tool/jstool.py find <pattern> <file>`
 
-> **Note on hooks**: This skill previously attempted to use PreToolUse hooks to intercept
-> Read/Edit calls on JSON files. However, Claude Code hooks cannot match on tool arguments
-> (like file extensions). According to the [Claude Code Hooks Reference](https://code.claude.com/docs/en/hooks.md),
-> matchers only support tool name patterns (e.g., `"Read"`, `"Edit"`), not argument-based
-> filtering (e.g., `"read(*.json)"`). Additionally, the `respond` hook type does not exist;
-> valid types are: `command`, `http`, `prompt`, `agent`. For argument-level validation,
-> hooks must use a `command` script that parses `tool_input` JSON.
+> **Note on hooks**: This skill previously attempted to use PreToolUse hooks
+> to intercept Read/Edit calls on JSON files. However, harness hooks generally
+> cannot match on tool arguments (like file extensions) — matchers only
+> support tool name patterns (e.g. `"Read"`, `"Edit"`), not argument-based
+> filtering (e.g. `"read(*.json)"`). For argument-level validation, hooks
+> must use a `command` script that parses `tool_input` JSON itself.
 
 ---
 
@@ -97,6 +110,10 @@ Omit `[file]` to read from stdin.
 
 - `-f` — Force: apply change to file. Default is **preview-only**.
 - Without `-f`: shows a color-annotated diff of the original JSON with `~~~~~` underline markers at the exact change position.
+- `-R` / `--reveal` — Show secret-like values in plain text (default: masked
+  with `prefix***suffix`). Place **before** the subcommand:
+  `jstool.py -R find apiKey config.json -k`. On-disk writes via `-f` always
+  use the real value regardless of `-R`.
 
 ## Path syntax
 
@@ -333,7 +350,24 @@ python3 ~/.claude/skills/json-flat-tool/jstool.py view /tmp/api_payload.json -s
 ## Notes
 
 - `before` / `after` only apply to **array elements**, not object keys.
-- To add a new key to an object, use `set`.
+- **Adding a brand-new key (`set` cannot create missing parents).**
+  `set` requires every segment of the target path to already exist; otherwise
+  it errors with `KeyError: 'foo'`. Two correct ways to add a new key:
+  - **`merge`** (recommended): write the patch to a small JSON file and
+    deep-merge it into an existing parent. `merge` creates any missing keys
+    inside the patch, but the target path itself must still exist:
+    ```bash
+    # Add messages.tts (when messages exists but messages.tts does not)
+    cat > /tmp/patch.json <<'EOF'
+    { "tts": { "auto": "tagged", "provider": "xiaomi" } }
+    EOF
+    jstool.py merge messages /tmp/patch.json config.json -f
+    ```
+  - **`set` with `@file` against an existing parent**: when the parent object
+    already exists, you can drop a whole subtree in:
+    ```bash
+    jstool.py set messages.tts @/tmp/tts-block.json config.json -f
+    ```
 - `-f` without a file path prints modified JSON to stdout.
 - `-E` / `-L` require `-F` pointing to an array path.
 - Array sampling for schema inference: up to 20 elements.
@@ -345,3 +379,46 @@ python3 ~/.claude/skills/json-flat-tool/jstool.py view /tmp/api_payload.json -s
 - `find` without `-g` uses Python `re.search` (substring regex by default).
 - `-d N` only affects the flat view display; schema inference and edit commands are unaffected.
 - `-d N` depth counts object key traversals only — array indices (`[0]`, `[1]`, …) do not increment depth.
+
+## Sensitive-key masking
+
+By default, `view` / `find` / `set` / `del` previews mask string values whose
+key name looks like a secret (`apiKey`, `token`, `password`, `client_secret`,
+`private_key`, …). Output looks like:
+
+```
+models.providers.newapi.apiKey string sk-P***mywu (masked; -R to reveal)
+```
+
+Pass `-R` (or `--reveal`) **before the subcommand** to see plain text for one
+invocation. On-disk writes are never affected by masking — `-f` always writes
+the real value, regardless of `-R`.
+
+```bash
+jstool.py find apiKey config.json -k          # masked
+jstool.py -R find apiKey config.json -k       # reveal
+```
+
+### Configuring masked patterns
+
+Patterns and the `prefix***suffix` format live in `<skill-dir>/config.json`,
+**not** hard-coded in `jstool.py`. Edit that file (with jstool itself, of
+course) to add/remove patterns or change how much of the value is shown:
+
+```json5
+// <skill-dir>/config.json
+{
+  "sensitive_keys": {
+    "key_name_patterns": ["apikey", "token", "password", "..."],
+    "mask_format": {
+      "show_prefix": 4,
+      "show_suffix": 4,
+      "min_length_to_mask": 8,
+      "placeholder": "***"
+    }
+  }
+}
+```
+
+Matching is case-insensitive and ignores punctuation in the key name —
+`apiKey`, `api_key`, `API-KEY`, `apikey` all hit the same pattern.

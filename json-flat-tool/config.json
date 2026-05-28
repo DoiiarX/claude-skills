@@ -1,0 +1,64 @@
+{
+  "_comment": "Skill-wide configuration for jstool. Every default behavior listed here can be overridden per invocation by a CLI flag. Set any cap to null to disable.",
+  "defaults": {
+    "_comment": "Default modes. CLI flags always win: -f forces apply even if default_force_apply=false, -R reveals even if default_reveal=false.",
+    "force_apply": false,
+    "reveal_secrets": false
+  },
+  "output_limits": {
+    "_comment": "Soft caps on view/find output to prevent context blowups. Override with -n / --max-tokens / --value-max. value_max_chars truncates only string VALUES in previews/diffs (never keys or paths). tokens_per_char is the rough ratio used to estimate tokens when no tokenizer is wired.",
+    "max_rows": 500,
+    "max_tokens": 25000,
+    "value_max_chars": 60,
+    "tokens_per_char": 0.25
+  },
+  "sensitive_keys": {
+    "_comment": "Default-mask any string value whose path's last segment matches one of key_name_patterns (case-insensitive substring, punctuation-stripped). Use -R/--reveal to disable masking for one invocation.",
+    "key_name_patterns": [
+      "apikey",
+      "api_key",
+      "api-key",
+      "secret",
+      "secretkey",
+      "client_secret",
+      "password",
+      "passwd",
+      "passphrase",
+      "token",
+      "access_token",
+      "refresh_token",
+      "id_token",
+      "bearer",
+      "authorization",
+      "auth",
+      "credential",
+      "credentials",
+      "private_key",
+      "privatekey",
+      "session",
+      "session_id",
+      "sessionid",
+      "cookie",
+      "appkey",
+      "app_secret",
+      "appsecret",
+      "encryption_key",
+      "signing_key",
+      "webhook_secret",
+      "dsn",
+      "connection_string",
+      "connectionstring",
+      "smtp_password",
+      "db_password",
+      "database_password",
+      "salt"
+    ],
+    "mask_format": {
+      "show_prefix": 4,
+      "show_suffix": 4,
+      "min_length_to_mask": 8,
+      "placeholder": "***"
+    }
+  }
+}
+

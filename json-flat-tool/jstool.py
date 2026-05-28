@@ -27,6 +27,7 @@ import fnmatch
 import json
 import re
 import sys
+from pathlib import Path
 from typing import Any, Optional
 
 
@@ -44,6 +45,246 @@ C_UND   = "\033[4m"     # underline
 C_BOLD  = "\033[1m"
 C_DIM   = "\033[2m"
 C_RESET = "\033[0m"
+
+
+# ── Skill config (defaults / output limits / sensitive-key masking) ───────────
+_SKILL_DIR = Path(__file__).resolve().parent
+_CONFIG_PATH = _SKILL_DIR / "config.json"
+
+_DEFAULT_DEFAULTS = {
+    "force_apply": False,
+    "reveal_secrets": False,
+}
+_DEFAULT_OUTPUT_LIMITS = {
+    "max_rows": 500,
+    "max_tokens": 25000,
+    "value_max_chars": 60,
+    "tokens_per_char": 0.25,
+}
+_DEFAULT_SENSITIVE = {
+    "key_name_patterns": [
+        "apikey", "api_key", "secret", "password", "passwd", "token",
+        "access_token", "refresh_token", "bearer", "authorization",
+        "credential", "credentials", "private_key", "session", "cookie",
+    ],
+    "mask_format": {
+        "show_prefix": 4, "show_suffix": 4,
+        "min_length_to_mask": 8, "placeholder": "***",
+    },
+}
+
+_NORMALIZE_RE = re.compile(r'[^a-z0-9]')
+
+
+def _merge_defaults(base: dict, user: Any) -> dict:
+    """Shallow-merge user-supplied dict over base defaults; ignore non-dicts."""
+    out = dict(base)
+    if isinstance(user, dict):
+        for k, v in user.items():
+            if k.startswith('_'):  # _comment etc.
+                continue
+            out[k] = v
+    return out
+
+
+def _load_skill_config() -> dict:
+    fallback = {
+        "defaults": dict(_DEFAULT_DEFAULTS),
+        "output_limits": dict(_DEFAULT_OUTPUT_LIMITS),
+        "sensitive_keys": _DEFAULT_SENSITIVE,
+    }
+    if not _CONFIG_PATH.is_file():
+        return fallback
+    try:
+        with _CONFIG_PATH.open("r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            return fallback
+        out = {
+            "defaults": _merge_defaults(_DEFAULT_DEFAULTS, cfg.get("defaults")),
+            "output_limits": _merge_defaults(_DEFAULT_OUTPUT_LIMITS, cfg.get("output_limits")),
+        }
+        sk = cfg.get("sensitive_keys") or {}
+        if not isinstance(sk, dict):
+            sk = {}
+        sk.setdefault("key_name_patterns", _DEFAULT_SENSITIVE["key_name_patterns"])
+        mf = sk.get("mask_format") or {}
+        if not isinstance(mf, dict):
+            mf = {}
+        for k, v in _DEFAULT_SENSITIVE["mask_format"].items():
+            mf.setdefault(k, v)
+        sk["mask_format"] = mf
+        out["sensitive_keys"] = sk
+        return out
+    except (json.JSONDecodeError, OSError):
+        return fallback
+
+
+_SKILL_CONFIG = _load_skill_config()
+_DEFAULTS = _SKILL_CONFIG["defaults"]
+_OUTPUT_LIMITS = _SKILL_CONFIG["output_limits"]
+_SENSITIVE = _SKILL_CONFIG["sensitive_keys"]
+_NORMALIZED_PATTERNS = tuple(
+    _NORMALIZE_RE.sub('', p.lower())
+    for p in _SENSITIVE["key_name_patterns"]
+    if isinstance(p, str) and p.strip()
+)
+
+# Runtime toggles populated by main() from CLI flags + config defaults.
+REVEAL_SECRETS = bool(_DEFAULTS.get("reveal_secrets", False))
+DEFAULT_FORCE_APPLY = bool(_DEFAULTS.get("force_apply", False))
+
+
+def _eff_limit(name: str, override: Any = None) -> Optional[int]:
+    """Resolve a numeric output limit. Override (CLI) > config > None.
+    Treats <= 0 or null as 'no cap'."""
+    if override is not None:
+        try:
+            n = int(override)
+        except (TypeError, ValueError):
+            return None
+        return n if n > 0 else None
+    raw = _OUTPUT_LIMITS.get(name)
+    if raw is None:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+# Runtime overrides set by main() if user passes -n / --max-tokens / --value-max
+RUNTIME_MAX_ROWS: Optional[int] = None
+RUNTIME_MAX_TOKENS: Optional[int] = None
+RUNTIME_VALUE_MAX: Optional[int] = None
+
+
+def get_max_rows() -> Optional[int]:
+    return _eff_limit("max_rows", RUNTIME_MAX_ROWS)
+
+
+def get_max_tokens() -> Optional[int]:
+    return _eff_limit("max_tokens", RUNTIME_MAX_TOKENS)
+
+
+def get_value_max() -> int:
+    val = _eff_limit("value_max_chars", RUNTIME_VALUE_MAX)
+    return val if val is not None else 60
+
+
+def shorten_value(s: str) -> str:
+    """Truncate a string VALUE for preview/diff display.
+    Only call on values, never on keys/paths."""
+    n = get_value_max()
+    if len(s) <= n:
+        return s
+    if n <= 3:
+        return s[:n]
+    return s[:n - 3] + "..."
+
+
+# ── Token budget (max_tokens enforcement) ──────────────────────────────────────
+_TOKEN_USED = 0.0
+_ANSI_RE = re.compile(r'\033\[[0-9;]*m')
+
+
+def reset_token_budget() -> None:
+    global _TOKEN_USED
+    _TOKEN_USED = 0.0
+
+
+def _estimate_tokens(text: str) -> float:
+    """Rough token count = visible_chars * tokens_per_char."""
+    visible = _ANSI_RE.sub('', text)
+    ratio = _OUTPUT_LIMITS.get("tokens_per_char", 0.25)
+    try:
+        ratio = float(ratio)
+    except (TypeError, ValueError):
+        ratio = 0.25
+    return len(visible) * ratio
+
+
+def would_exceed_token_budget(line: str) -> bool:
+    """True if printing `line` would push cumulative token estimate past
+    max_tokens. False when no budget is configured."""
+    cap = get_max_tokens()
+    if cap is None:
+        return False
+    return (_TOKEN_USED + _estimate_tokens(line)) > cap
+
+
+def consume_token_budget(line: str) -> None:
+    """Charge one printed line to the budget. Idempotent if budget disabled."""
+    global _TOKEN_USED
+    _TOKEN_USED += _estimate_tokens(line)
+
+
+def format_row(path: str, type_name: str, value) -> str:
+    """Same formatting as print_row, but returns the colored string instead
+    of printing — needed for token-budget pre-check in cmd_view / cmd_find."""
+    p = f"{C_PATH}{path}{C_RESET}"
+    t = f"{C_TYPE}{type_name}{C_RESET}"
+    if value is None:
+        return f"{p} {t}"
+    if value == "(empty)":
+        return f"{p} {t} {C_EMPTY}(empty){C_RESET}"
+    if (isinstance(value, str)
+            and type_name in ("object", "array")
+            and value.startswith(("{", "["))):
+        return f"{p} {t} {C_DIM}{value}{C_RESET}"
+    if value == "(null)":
+        if type_name == "unknown":
+            return f"{p} {C_UNINF}{type_name}{C_RESET} {C_UNINF}(null){C_RESET}"
+        return f"{p} {t} {C_NULL}(null){C_RESET}"
+    display = maybe_mask(path, value)
+    if display != value:
+        return (f"{p} {t} {C_VAL}{fmt_val(display)}{C_RESET} "
+                f"{C_DIM}(masked; -R to reveal){C_RESET}")
+    return f"{p} {t} {C_VAL}{fmt_val(display)}{C_RESET}"
+
+
+def _last_segment(path: str) -> str:
+    """Strip array indices and return the last object-key segment."""
+    if not path:
+        return ""
+    last = path.rsplit('.', 1)[-1]
+    last = re.sub(r'\[\d+\]$', '', last)
+    return last
+
+
+def _is_sensitive_path(path: str) -> bool:
+    seg = _NORMALIZE_RE.sub('', _last_segment(path).lower())
+    if not seg:
+        return False
+    return any(p and p in seg for p in _NORMALIZED_PATTERNS)
+
+
+def mask_secret(value: Any) -> Any:
+    """Return masked form when value looks like a secret. No-op if revealed."""
+    if REVEAL_SECRETS or not isinstance(value, str):
+        return value
+    mf = _SENSITIVE["mask_format"]
+    placeholder = mf.get("placeholder", "***")
+    min_len = int(mf.get("min_length_to_mask", 8))
+    if len(value) < min_len:
+        return placeholder
+    pre = max(0, int(mf.get("show_prefix", 4)))
+    suf = max(0, int(mf.get("show_suffix", 4)))
+    if pre + suf >= len(value):
+        return placeholder
+    return f"{value[:pre]}{placeholder}{value[-suf:] if suf else ''}"
+
+
+def maybe_mask(path: str, value: Any) -> Any:
+    """Mask if path's last key is sensitive, else passthrough."""
+    if REVEAL_SECRETS:
+        return value
+    if not isinstance(value, str):
+        return value
+    if _is_sensitive_path(path):
+        return mask_secret(value)
+    return value
 
 
 # ── Type helpers ───────────────────────────────────────────────────────────────
@@ -257,7 +498,11 @@ def print_row(path: str, type_name: str, value):
         else:
             print(f"{p} {t} {C_NULL}(null){C_RESET}")
     else:
-        print(f"{p} {t} {C_VAL}{fmt_val(value)}{C_RESET}")
+        display = maybe_mask(path, value)
+        if display != value:
+            print(f"{p} {t} {C_VAL}{fmt_val(display)}{C_RESET} {C_DIM}(masked; -R to reveal){C_RESET}")
+        else:
+            print(f"{p} {t} {C_VAL}{fmt_val(display)}{C_RESET}")
 
 
 # ── View ───────────────────────────────────────────────────────────────────────
@@ -305,14 +550,36 @@ def cmd_view(data: Any, schema: bool = False,
     if limit is not None:
         rows = rows[:limit]
 
+    reset_token_budget()
+    truncated_by_tokens = False
+    shown = 0
+    next_path: Optional[str] = None
     for path, type_name, value in rows:
-        print_row(path, type_name, value)
+        line = format_row(path, type_name, value)
+        if would_exceed_token_budget(line + "\n"):
+            truncated_by_tokens = True
+            next_path = path
+            break
+        print(line)
+        consume_token_budget(line + "\n")
+        shown += 1
+    if truncated_by_tokens:
+        cap = get_max_tokens()
+        remain = len(rows) - shown
+        msg1 = (f"── truncated: next row would exceed token cap "
+                f"(shown {shown}/{len(rows)}, cap={cap}) ──")
+        print(f"{C_DIM}{msg1}{C_RESET}")
+        hint = (f"  Hint: drill into one path with "
+                f"{C_BOLD}-F {next_path}{C_RESET}{C_DIM} "
+                f"instead of raising --max-tokens. "
+                f"Use {C_BOLD}--max-tokens 0{C_RESET}{C_DIM} only as a last resort.{C_RESET}")
+        print(f"{C_DIM}{hint}")
 
     # Footer
     pagination = offset > 0 or limit is not None or elem_offset > 0 or elem_limit is not None
     if pagination:
         shown_start = offset + 1
-        shown_end   = offset + len(rows)
+        shown_end   = offset + shown
         line = f"── showing rows {shown_start}–{shown_end} of {total}{elem_footer} ──"
         print(f"{C_DIM}{line}{C_RESET}")
 
@@ -347,7 +614,10 @@ def cmd_find(data: Any, pattern: str,
         def matches(text: str) -> bool:
             return bool(compiled.search(text))
 
+    reset_token_budget()
     found = 0
+    truncated_by_tokens = False
+    next_path: Optional[str] = None
     for path, type_name, val_marker in rows:
         val_str = "" if val_marker is None or val_marker in ("(empty)",) else str(val_marker)
         hit_key = matches(path)
@@ -359,10 +629,25 @@ def cmd_find(data: Any, pattern: str,
             hit = hit_key or (bool(val_str) and matches(val_str))
 
         if hit:
-            print_row(path, type_name, val_marker)
+            line = format_row(path, type_name, val_marker)
+            if would_exceed_token_budget(line + "\n"):
+                truncated_by_tokens = True
+                next_path = path
+                break
+            print(line)
+            consume_token_budget(line + "\n")
             found += 1
 
-    if found == 0:
+    if truncated_by_tokens:
+        cap = get_max_tokens()
+        msg1 = f"── truncated: next match would exceed token cap (cap={cap}) ──"
+        print(f"{C_DIM}{msg1}{C_RESET}")
+        hint = (f"  Hint: drill into one match with "
+                f"{C_BOLD}view -F {next_path}{C_RESET}{C_DIM} "
+                f"or narrow the pattern. "
+                f"Use {C_BOLD}--max-tokens 0{C_RESET}{C_DIM} only as a last resort.{C_RESET}")
+        print(f"{C_DIM}{hint}")
+    if found == 0 and not truncated_by_tokens:
         print(f"{C_DIM}(no matches){C_RESET}")
 
 
@@ -578,6 +863,25 @@ def _show_insert_marker(pretty: str, open_line_idx: int,
 
 
 # ── Diff preview helper ────────────────────────────────────────────────────────
+def _redact_for_display(data: Any, path: str = "root", root_level: bool = True) -> Any:
+    """Walk data, masking string leaves whose path's last key is sensitive.
+    Used only for preview/diff rendering — never for on-disk writes."""
+    if REVEAL_SECRETS:
+        return data
+    if isinstance(data, dict):
+        out = {}
+        for k, v in data.items():
+            child = k if root_level else f"{path}.{k}"
+            out[k] = _redact_for_display(v, child, False)
+        return out
+    if isinstance(data, list):
+        return [_redact_for_display(v, f"{path}[{i}]", False)
+                for i, v in enumerate(data)]
+    if isinstance(data, str) and _is_sensitive_path(path):
+        return mask_secret(data)
+    return data
+
+
 def _show_result_diff(orig_data: Any, result_data: Any, context: int = 3):
     """
     Show a git-style line diff between orig and result JSON.
@@ -585,8 +889,10 @@ def _show_result_diff(orig_data: Any, result_data: Any, context: int = 3):
       red   (- line)  = removed
       green (+ line)  = added
     """
-    orig_lines   = json.dumps(orig_data,   indent=2, ensure_ascii=False).split('\n')
-    result_lines = json.dumps(result_data, indent=2, ensure_ascii=False).split('\n')
+    orig_disp   = _redact_for_display(orig_data)
+    result_disp = _redact_for_display(result_data)
+    orig_lines   = json.dumps(orig_disp,   indent=2, ensure_ascii=False).split('\n')
+    result_lines = json.dumps(result_disp, indent=2, ensure_ascii=False).split('\n')
 
     matcher = difflib.SequenceMatcher(None, orig_lines, result_lines, autojunk=False)
     groups  = list(matcher.get_grouped_opcodes(context))
@@ -617,8 +923,11 @@ def _show_result_diff(orig_data: Any, result_data: Any, context: int = 3):
 # ── Preview commands ───────────────────────────────────────────────────────────
 def preview_set(data: Any, segments: list, new_val: Any, path_str: str):
     _, _, old_val = navigate(data, segments)
-    old_json = json.dumps(old_val, ensure_ascii=False)
-    new_json = json.dumps(new_val, ensure_ascii=False)
+    sensitive = _is_sensitive_path(path_str)
+    old_for_label = mask_secret(old_val) if sensitive and isinstance(old_val, str) else old_val
+    new_for_label = mask_secret(new_val) if sensitive and isinstance(new_val, str) else new_val
+    old_json = json.dumps(old_for_label, ensure_ascii=False)
+    new_json = json.dumps(new_for_label, ensure_ascii=False)
 
     result = _copy.deepcopy(data)
     result = apply_set(result, segments, new_val)
@@ -626,18 +935,21 @@ def preview_set(data: Any, segments: list, new_val: Any, path_str: str):
     print()
     _show_result_diff(data, result)
 
-    old_short = old_json if len(old_json) <= 60 else old_json[:57] + "..."
-    new_short = new_json if len(new_json) <= 60 else new_json[:57] + "..."
+    old_short = shorten_value(old_json)
+    new_short = shorten_value(new_json)
+    suffix = f" {C_DIM}(masked; -R to reveal){C_RESET}" if sensitive and not REVEAL_SECRETS else ""
     print(f"\n{C_BOLD}[PREVIEW]{C_RESET} "
           f"set {C_PATH}{path_str}{C_RESET}: "
-          f"{C_DEL}{old_short}{C_RESET} → {C_ADD}{new_short}{C_RESET}")
+          f"{C_DEL}{old_short}{C_RESET} → {C_ADD}{new_short}{C_RESET}{suffix}")
     print("Run with -f to apply.\n")
 
 
 def preview_del(data: Any, segments: list, path_str: str):
     parent, key, old_val = navigate(data, segments)
-    old_json = json.dumps(old_val, ensure_ascii=False)
-    pretty   = json.dumps(data, indent=2, ensure_ascii=False)
+    sensitive = _is_sensitive_path(path_str)
+    display_old = mask_secret(old_val) if sensitive and isinstance(old_val, str) else old_val
+    old_json = json.dumps(display_old, ensure_ascii=False)
+    pretty   = json.dumps(_redact_for_display(data), indent=2, ensure_ascii=False)
     lines    = pretty.split('\n')
 
     print()
@@ -655,13 +967,14 @@ def preview_del(data: Any, segments: list, path_str: str):
             print(f"  (could not locate value in JSON text)\n")
     else:
         # Container: show compact summary
-        short = old_json if len(old_json) <= 60 else old_json[:57] + "..."
+        short = shorten_value(old_json)
         print(f"  Will delete {C_DEL}{short}{C_RESET}")
         print(f"  at path {C_PATH}{path_str}{C_RESET}")
 
+    suffix = f" {C_DIM}(masked; -R to reveal){C_RESET}" if sensitive and not REVEAL_SECRETS else ""
     print(f"\n{C_BOLD}[PREVIEW]{C_RESET} "
           f"del {C_PATH}{path_str}{C_RESET}: "
-          f"{C_DEL}{old_json[:60]}{'...' if len(old_json)>60 else ''}{C_RESET}")
+          f"{C_DEL}{shorten_value(old_json)}{C_RESET}{suffix}")
     print("Run with -f to apply.\n")
 
 
@@ -1146,8 +1459,16 @@ def usage():
     print(f"  jstool set-null <path> [file] [-f]")
     print()
     print(f"{U}FLAGS{R}")
-    print(f"  -f   Apply change to file (default: preview only)")
-    print(f"  -d N Collapse containers beyond depth N (view only; array indices don't count)")
+    print(f"  -f, --no-force      Apply / preview-only (default from config.json)")
+    print(f"  -d N                Collapse containers beyond depth N (view only)")
+    print(f"  -R, --reveal        Show secret-like values in plain text")
+    print(f"      --no-reveal     Force masking even if config defaults to reveal")
+    print(f"      --max-tokens N  Stop output before next row would exceed N tokens (0 = no cap)")
+    print(f"      --value-max N   Truncate string VALUES (not keys) to N chars in previews")
+    print()
+    print(f"{U}DEFAULTS{R}")
+    print(f"  All defaults live in {C_PATH}<skill-dir>/config.json{R}.")
+    print(f"  Edit it to change permanent behavior; CLI flags always win for one call.")
     print()
     print(f"{U}PATHS{R}")
     print(f"  root              root node")
@@ -1167,14 +1488,57 @@ def usage():
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
+def _pop_int_flag(args: list, *names: str) -> Optional[int]:
+    """Pop the first occurrence of any of `names` followed by an int value.
+    Returns parsed int or None. Removes both the flag and its value from args."""
+    for name in names:
+        if name in args:
+            i = args.index(name)
+            if i + 1 < len(args):
+                val_str = args[i + 1]
+                del args[i:i + 2]
+                try:
+                    return int(val_str)
+                except ValueError:
+                    print(f"{C_DEL}Invalid integer for {name}: {val_str}{C_RESET}",
+                          file=sys.stderr)
+                    sys.exit(1)
+            else:
+                del args[i]
+                print(f"{C_DEL}Missing value for {name}{C_RESET}", file=sys.stderr)
+                sys.exit(1)
+    return None
+
+
 def main():
+    global REVEAL_SECRETS, RUNTIME_MAX_ROWS, RUNTIME_MAX_TOKENS, RUNTIME_VALUE_MAX
     args = sys.argv[1:]
 
     if not args or args[0] in ("-h", "--help", "help"):
         usage()
         sys.exit(0)
 
-    force = pop_flag(args, "-f")
+    # Reveal: CLI flag overrides config default
+    if pop_flag(args, "-R") or pop_flag(args, "--reveal"):
+        REVEAL_SECRETS = True
+    elif pop_flag(args, "--no-reveal"):
+        REVEAL_SECRETS = False
+    # else: REVEAL_SECRETS keeps the config-default value loaded at import
+
+    # Output limits: CLI overrides become RUNTIME_* (see _eff_limit chain)
+    n_override = _pop_int_flag(args, "--max-tokens")
+    if n_override is not None:
+        RUNTIME_MAX_TOKENS = n_override
+    v_override = _pop_int_flag(args, "--value-max")
+    if v_override is not None:
+        RUNTIME_VALUE_MAX = v_override
+
+    # Force apply: CLI -f overrides config default. --no-force disables it.
+    force = bool(DEFAULT_FORCE_APPLY)
+    if pop_flag(args, "-f"):
+        force = True
+    if pop_flag(args, "--no-force"):
+        force = False
 
     # ── B-style: <path> = <value> [file] ──────────────────────────────────────
     if is_bstyle(args):
