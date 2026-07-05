@@ -9,6 +9,7 @@ import sys
 import re
 import argparse
 import subprocess
+import shutil
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -84,6 +85,134 @@ def create_placeholder(issues_dir: Path, issue_id: str, dry_run: bool = False) -
     return placeholder_path
 
 
+
+
+def slugify_title(title: str) -> str:
+    """Convert a title into a safe issue filename segment."""
+    slug = title.strip()
+    slug = re.sub(r"\s+", "-", slug)
+    slug = re.sub(r"[\\/:*?\"<>|#`$]+", "", slug)
+    slug = re.sub(r"-+", "-", slug).strip("-._")
+    return slug or "untitled"
+
+
+def find_issue_file(issues_dir: Path, issue_id: str, states=("open", "closed")) -> Path:
+    """Find an issue file by ID in the requested states."""
+    normalized = issue_id.lstrip("#")
+    if normalized.isdigit():
+        normalized = f"{int(normalized):03d}"
+
+    matches = []
+    for state in states:
+        state_dir = issues_dir / state
+        if state_dir.is_dir():
+            matches.extend(state_dir.glob(f"{normalized}-*.md"))
+
+    matches = [m for m in matches if not m.name.endswith("-placeholder.md")]
+    if not matches:
+        print(f"Error: Issue not found: #{normalized}", file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        print(f"Error: Multiple issues match #{normalized}:", file=sys.stderr)
+        for match in matches:
+            print(f"  {match}", file=sys.stderr)
+        sys.exit(1)
+    return matches[0]
+
+
+def template_path_for(issues_dir: Path, issue_type: str) -> Path:
+    """Return project template if available, otherwise bundled template."""
+    project_template = issues_dir / "templates" / f"{issue_type}.md"
+    if project_template.is_file():
+        return project_template
+    return Path(__file__).resolve().parent / "templates" / f"{issue_type}.md"
+
+
+def replace_metadata_line(content: str, field: str, value: str) -> str:
+    """Replace a markdown metadata line if present."""
+    pattern = rf"^\*\*{re.escape(field)}\*\*:\s*.*$"
+    repl = f"**{field}**: {value}"
+    return re.sub(pattern, repl, content, flags=re.MULTILINE)
+
+
+def ensure_metadata_line(content: str, field: str, value: str, after_fields=("Type", "Priority", "Status")) -> str:
+    """Ensure a markdown metadata line exists near the top metadata block."""
+    if re.search(rf"^\*\*{re.escape(field)}\*\*:", content, flags=re.MULTILINE):
+        return replace_metadata_line(content, field, value)
+
+    lines = content.splitlines()
+    insert_at = None
+    for wanted in after_fields:
+        for idx, line in enumerate(lines):
+            if line.startswith(f"**{wanted}**:"):
+                insert_at = idx + 1
+                break
+        if insert_at is not None:
+            break
+    if insert_at is None:
+        for idx, line in enumerate(lines):
+            if line.strip() == "---":
+                insert_at = idx
+                break
+    if insert_at is None:
+        insert_at = min(2, len(lines))
+    lines.insert(insert_at, f"**{field}**: {value}")
+    return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+
+
+def fill_template(content: str, issue_id: str, issue_type: str, title: str, priority: str, assignee: str, labels: list[str], date: str) -> str:
+    """Fill common placeholders in an issue template."""
+    label_text = ", ".join(labels) if labels else issue_type
+
+    # Fill the heading without touching unrelated #XXX placeholders such as
+    # Blocks/Blocked by/Related entries.
+    content = re.sub(
+        rf"^# \[{issue_type.capitalize()}\](?: #XXX)?(?: Issue Title| \{{简短标题\}})?",
+        f"# [{issue_type.capitalize()}] #{issue_id} {title}",
+        content,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    content = re.sub(r"^\*\*Issue ID\*\*:\s*#XXX\s*$", f"**Issue ID**: #{issue_id}", content, flags=re.MULTILINE)
+    content = content.replace("YYYY-MM-DD", date)
+    content = content.replace("Issue Title", title)
+    content = content.replace("{简短标题}", title)
+
+    content = replace_metadata_line(content, "Priority", priority)
+    content = replace_metadata_line(content, "Status", "Open")
+    content = replace_metadata_line(content, "Created", date)
+    content = replace_metadata_line(content, "Updated", date)
+    content = ensure_metadata_line(content, "Type", issue_type, after_fields=("Priority", "Status"))
+    content = ensure_metadata_line(content, "Assignee", assignee, after_fields=("Type", "Priority"))
+    content = ensure_metadata_line(content, "Labels", label_text, after_fields=("Assignee", "Type"))
+    return content
+
+
+def append_progress(content: str, message: str, date: str) -> str:
+    """Append a progress bullet under today's heading."""
+    section_match = re.search(r"^## 进展记录\s*$", content, flags=re.MULTILINE)
+    bullet = f"- {message}"
+    if not section_match:
+        suffix = "" if content.endswith("\n") else "\n"
+        return f"{content}{suffix}\n## 进展记录\n\n### {date}\n{bullet}\n"
+
+    after_section = content[section_match.end():]
+    next_section = re.search(r"^## ", after_section, flags=re.MULTILINE)
+    section_end = len(content) if not next_section else section_match.end() + next_section.start()
+    section_body = content[section_match.end():section_end]
+
+    date_match = re.search(rf"^### {re.escape(date)}(?:\b|\s|$).*$", section_body, flags=re.MULTILINE)
+    if date_match:
+        heading_abs = section_match.end() + date_match.start()
+        after_heading_abs = section_match.end() + date_match.end()
+        later_heading = re.search(r"^### ", content[after_heading_abs:section_end], flags=re.MULTILINE)
+        insert_at = section_end if not later_heading else after_heading_abs + later_heading.start()
+        prefix = content[:insert_at].rstrip()
+        suffix = content[insert_at:]
+        return f"{prefix}\n{bullet}\n\n{suffix.lstrip()}"
+
+    return f"{content[:section_match.end()]}\n\n### {date}\n{bullet}\n{content[section_match.end():]}"
+
 def parse_issue_file(filepath: Path) -> dict:
     """Parse issue file to extract metadata."""
     try:
@@ -133,6 +262,99 @@ def parse_issue_file(filepath: Path) -> dict:
             "filepath": filepath
         }
 
+
+
+
+def cmd_create(args):
+    """Create a new issue from a template."""
+    issues_dir = Path(args.issues_dir) if args.issues_dir else find_issues_dir()
+    if not issues_dir.exists():
+        print(f"Error: Directory not found: {issues_dir}", file=sys.stderr)
+        print(f"Hint: Create with: mkdir -p {issues_dir}/{{open,closed,templates}}", file=sys.stderr)
+        sys.exit(1)
+
+    issue_id = next_issue_id(issues_dir)
+    open_dir = issues_dir / "open"
+    open_dir.mkdir(parents=True, exist_ok=True)
+
+    title_slug = slugify_title(args.title)
+    issue_path = open_dir / f"{issue_id}-{args.type}-{title_slug}.md"
+    if issue_path.exists():
+        print(f"Error: Issue already exists: {issue_path}", file=sys.stderr)
+        sys.exit(1)
+
+    template_path = template_path_for(issues_dir, args.type)
+    if not template_path.is_file():
+        print(f"Error: Template not found: {template_path}", file=sys.stderr)
+        sys.exit(1)
+
+    date = datetime.now().strftime("%Y-%m-%d")
+    labels = [args.type]
+    for label in args.label or []:
+        if label not in labels:
+            labels.append(label)
+    content = template_path.read_text(encoding="utf-8")
+    content = fill_template(content, issue_id, args.type, args.title, args.priority, args.assignee, labels, date)
+    issue_path.write_text(content, encoding="utf-8")
+
+    if args.quiet:
+        print(issue_path)
+    else:
+        print(f"Created {issue_path}")
+
+
+def cmd_close(args):
+    """Close an open issue and move it to closed/."""
+    issues_dir = Path(args.issues_dir) if args.issues_dir else find_issues_dir()
+    if not issues_dir.exists():
+        print(f"Error: Directory not found: {issues_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    issue_path = find_issue_file(issues_dir, args.issue_id, states=("open",))
+    date = datetime.now().strftime("%Y-%m-%d")
+    content = issue_path.read_text(encoding="utf-8")
+    content = replace_metadata_line(content, "Status", "Closed ✅")
+    content = replace_metadata_line(content, "Updated", date)
+    content = ensure_metadata_line(content, "Closed", date, after_fields=("Updated", "Created"))
+
+    if args.summary:
+        suffix = "" if content.endswith("\n") else "\n"
+        content = f"{content}{suffix}\n## 解决总结\n\n{args.summary}\n"
+
+    closed_dir = issues_dir / "closed"
+    closed_dir.mkdir(parents=True, exist_ok=True)
+    target = closed_dir / issue_path.name
+    if target.exists():
+        print(f"Error: Target already exists: {target}", file=sys.stderr)
+        sys.exit(1)
+
+    issue_path.write_text(content, encoding="utf-8")
+    shutil.move(str(issue_path), str(target))
+
+    if args.quiet:
+        print(target)
+    else:
+        print(f"Closed {target}")
+
+
+def cmd_progress(args):
+    """Append a progress note to an issue."""
+    issues_dir = Path(args.issues_dir) if args.issues_dir else find_issues_dir()
+    if not issues_dir.exists():
+        print(f"Error: Directory not found: {issues_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    issue_path = find_issue_file(issues_dir, args.issue_id)
+    date = datetime.now().strftime("%Y-%m-%d")
+    content = issue_path.read_text(encoding="utf-8")
+    content = replace_metadata_line(content, "Updated", date)
+    content = append_progress(content, args.message, date)
+    issue_path.write_text(content, encoding="utf-8")
+
+    if args.quiet:
+        print(issue_path)
+    else:
+        print(f"Updated {issue_path}")
 
 def cmd_next(args):
     """Reserve the next available issue ID."""
@@ -425,6 +647,61 @@ Examples:
     )
     help_parser.add_argument("command_name", nargs="?", help="Command to show help for")
     help_parser.set_defaults(func=cmd_help)
+
+    # create command
+    create_parser = subparsers.add_parser(
+        "create",
+        help="Create a new issue from a template",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  local-issue create bug "PDF 连续模式缩放错位"
+  local-issue create feature "支持视频 mov/mkv 转码" --priority High
+  local-issue create refactor "拆分 AnnotationCanvas" --assignee claude
+  local-issue create bug "渲染回归" --label pdf --label regression
+        """
+    )
+    create_parser.add_argument("type", choices=["bug", "feature", "refactor"], help="Issue type")
+    create_parser.add_argument("title", help="Issue title")
+    create_parser.add_argument("issues_dir", nargs="?", help="Path to .issues directory")
+    create_parser.add_argument("--priority", choices=["High", "Medium", "Low"], default="Medium", help="Issue priority")
+    create_parser.add_argument("--assignee", default="Unassigned", help="Issue assignee")
+    create_parser.add_argument("--label", action="append", help="Additional label; can be repeated")
+    create_parser.add_argument("--quiet", "-q", action="store_true", help="Only output created path")
+    create_parser.set_defaults(func=cmd_create)
+
+    # close command
+    close_parser = subparsers.add_parser(
+        "close",
+        help="Close an open issue and move it to closed/",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  local-issue close 047
+  local-issue close 047 --summary "修复 canvasZoom 重复换算"
+        """
+    )
+    close_parser.add_argument("issue_id", help="Issue ID, with or without #")
+    close_parser.add_argument("issues_dir", nargs="?", help="Path to .issues directory")
+    close_parser.add_argument("--summary", help="Append a closing summary")
+    close_parser.add_argument("--quiet", "-q", action="store_true", help="Only output closed path")
+    close_parser.set_defaults(func=cmd_close)
+
+    # progress command
+    progress_parser = subparsers.add_parser(
+        "progress",
+        help="Append a progress note to an issue",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  local-issue progress 047 "完成根因定位：canvasZoom 被重复应用"
+        """
+    )
+    progress_parser.add_argument("issue_id", help="Issue ID, with or without #")
+    progress_parser.add_argument("message", help="Progress note to append")
+    progress_parser.add_argument("issues_dir", nargs="?", help="Path to .issues directory")
+    progress_parser.add_argument("--quiet", "-q", action="store_true", help="Only output updated path")
+    progress_parser.set_defaults(func=cmd_progress)
 
     # next command
     next_parser = subparsers.add_parser(

@@ -40,6 +40,9 @@ alias local-issue='python3 ~/.claude/skills/local-issue/local-issue'
 
 **可用命令**：
 
+- `local-issue create` - 从模板创建新 issue
+- `local-issue close` - 关闭 issue 并移动到 `closed/`
+- `local-issue progress` - 追加进展记录
 - `local-issue next` - 预留下一个可用的 issue 编号
 - `local-issue list` - 列出 issues
 - `local-issue status` - 显示详细状态汇总
@@ -132,6 +135,34 @@ ls .issues/templates/
 - 若存在 `.issues/templates/{type}.md` → 以该文件为模板
 - 若不存在 → 使用 skill 内置模板（见 `templates/` 目录）
 
+## 推荐创建方式：`create`
+
+`create` 会自动完成编号分配、文件命名、模板选择和常见占位符替换，是创建 issue 的首选方式。
+
+```bash
+local-issue create bug "PDF 连续模式缩放错位"
+local-issue create feature "支持视频 mov/mkv 转码" --priority High
+local-issue create refactor "拆分 AnnotationCanvas" --assignee claude
+local-issue create bug "渲染回归" --label pdf --label regression
+```
+
+行为：
+- 自动选择下一个编号
+- 文件名格式：`.issues/open/{NNN}-{type}-{title}.md`
+- 优先使用项目模板 `.issues/templates/{type}.md`，否则使用 skill 内置模板
+- 自动替换 `#XXX`、`YYYY-MM-DD`、`Issue Title`、`{简短标题}`
+- 自动维护 `Status`、`Priority`、`Type`、`Created`、`Updated`、`Assignee`、`Labels` 等常见元信息
+
+输出示例：
+
+```text
+Created .issues/open/047-bug-PDF连续模式缩放错位.md
+```
+
+## 手动创建流程
+
+以下 `next` + `mv` 流程保留给需要精确控制文件名或模板内容的场景。
+
 ### 4. 重命名占位文件并填充内容
 
 由于步骤 1 已经创建了占位文件（如 `.issues/open/047-placeholder.md`），现在需要：
@@ -184,24 +215,70 @@ git commit -m "docs: add issue #{NNN} - {简短描述}"
 - 更新 issue 中的"进展记录"
 - 实现时在代码注释中引用：`// Fix: #{NNN}`
 
+## 更新进展
+
+使用 `progress` 为指定 issue 追加进展记录，并同步更新 `Updated` 日期：
+
+```bash
+local-issue progress 047 "完成根因定位：canvasZoom 被重复应用"
+```
+
+如果 issue 中已有当天的 `### YYYY-MM-DD` 小节，会直接追加 bullet；否则会在 `## 进展记录` 下创建当天小节。
+
 ## 关闭 Issue
 
-完成后：
+推荐使用 `close` 关闭 issue：
 
-1. 在 issue 文件中更新：
+```bash
+local-issue close 047
+local-issue close 047 --summary "修复 canvasZoom 重复换算"
+```
+
+行为：
+1. 查找 `.issues/open/047-*.md`
+2. 更新：
    - `Status: Closed ✅`
    - `Updated: {YYYY-MM-DD}`
-   - 新增 `Closed: {YYYY-MM-DD}` 字段
-   - 补充进展记录和解决总结
+   - `Closed: {YYYY-MM-DD}`
+3. 如传入 `--summary`，追加 `## 解决总结`
+4. 移动到 `.issues/closed/`
 
-2. 移动并提交（遵循项目 commit 规范，以下为兜底格式）：
-```bash
-mv .issues/open/{NNN}-*.md .issues/closed/
-git add .issues/
-git commit -m "docs: close issue #{NNN} - {描述}
+## 参考文档记录规范
 
-Closes #{NNN}"
-```
+当 issue 涉及第三方库、框架、API 或版本特定行为时，应在 issue 中记录参考来源，避免只凭记忆实现。
+
+### Context7 特例
+
+如果项目安装了 `/context7` skill，且 issue 涉及第三方库 API，应优先使用 Context7 查询官方文档。
+
+推荐流程：
+
+1. 搜索库 ID：
+
+   ```bash
+   scripts/context7.sh search "library-name"
+   ```
+
+2. 查询相关主题：
+
+   ```bash
+   scripts/context7.sh docs "/library-id" "topic" "code"
+   ```
+
+3. 在 issue 的 `参考资料` 或 `技术方案` 中记录：
+
+   ```md
+   ## 参考资料
+
+   - Context7: `/library-id` — topic: `xxx`
+   - 结论：……
+   ```
+
+适用场景：
+- 新增或修改第三方库调用
+- 不确定 API 参数、返回值、生命周期、版本差异
+- 需要示例代码辅助实现
+- 依赖升级或替换
 
 ## 查询命令
 
@@ -411,7 +488,14 @@ ghi9012
 
 用户输入：`/local-issue 记录 WebSocket 断线重连的 bug`
 
-执行：
+执行（推荐）：
+1. 运行 `local-issue create bug "WebSocket 断线重连"`
+2. 根据输出文件补充问题细节
+3. `git add .issues/open/047-bug-WebSocket断线重连.md`
+4. `git commit -m "docs: add issue #047 - WebSocket断线重连bug"`
+5. 开始分析代码，在进展记录中更新状态
+
+手动流程：
 1. 运行 `local-issue next`
    - 扫描得最大编号为 046，新建 047
    - 创建占位文件 `.issues/open/047-placeholder.md`
@@ -446,7 +530,17 @@ ghi9012
 local-issue help
 local-issue help next
 
-# 创建新 issue（预留编号）
+# 创建新 issue（推荐）
+local-issue create bug "PDF 连续模式缩放错位"
+local-issue create feature "支持视频 mov/mkv 转码" --priority High
+
+# 追加进展
+local-issue progress 047 "完成根因定位"
+
+# 关闭 issue
+local-issue close 047 --summary "修复完成"
+
+# 预留编号（手动流程）
 local-issue next
 local-issue next --quiet  # 仅输出编号
 
