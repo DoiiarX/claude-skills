@@ -28,7 +28,7 @@
 - Prefer omitting unknown optional fields instead of writing empty strings.
 - The CLI should tolerate `null`, missing values, and empty strings in existing sidecars.
 - Do not store secret values. Store paths and operational warnings only.
-- Default CLI output masks IP addresses, DNS names, host fields, and connection commands. Remote `stdout`/`stderr`/`output` remains readable with embedded secrets, IPs, and hosts redacted.
+- Default CLI output masks IP addresses, DNS names, host fields, connection commands, and SSH fingerprints as `__MASKED_TYPE_hash__`. The salt is generated once in the CLI install directory, so identical values map to identical tokens on the same install. Remote `stdout`/`stderr`/`output` remains readable with embedded secrets, IPs, and hosts redacted.
 
 ## Lifecycle fields
 

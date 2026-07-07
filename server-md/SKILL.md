@@ -46,7 +46,7 @@ allowed-tools: Bash
 
 ## CLI 速查
 
-默认输出会 mask secret-like 字段和值，也会 mask IP/host/command/SSH 指纹等连接目标。`stdout`/`stderr`/`output` 会保留可读日志内容，但会掩码其中的 secret、IP、host 和 SSH 指纹。不要主动揭示真实 secret 或网络地址；只有用户明确要求查看真实值时，才使用本节末尾的高级参数。
+默认输出会 mask secret-like 字段和值，也会 mask IP/host/command/SSH 指纹等连接目标。Mask 格式为 `__MASKED_TYPE_hash__`，同一真实值在同一 CLI 安装目录内会稳定映射到同一 token，方便判断多行日志是否指向同一对象。`stdout`/`stderr`/`output` 会保留可读日志内容，但会掩码其中的 secret、IP、host 和 SSH 指纹。不要主动揭示真实 secret 或网络地址；只有用户明确要求查看真实值时，才使用本节末尾的高级参数。
 
 ### locate / env
 
@@ -147,14 +147,16 @@ server-md redact-check <paths...> --fix --json
 
 ### 高级：显示被掩码的真实值
 
-`--reveal` 是全局参数，必须放在子命令前。只有用户明确要求查看真实值时才用：
+`--reveal` 是全局参数，必须放在子命令前。只有用户明确要求查看真实值时才用。可以一次 reveal 多个类型；不传类型表示 reveal 全部。
 
 ```bash
-server-md --reveal <subcommand> ...
+server-md --reveal HOST IP <subcommand> ...
+server-md --reveal __MASKED_HOST_ab12cd34ef__ __MASKED_IP_9f8e7d6c5b__ shortcut run --category logs --name newapi-errors --detail --json
+server-md --reveal SSH_KEY HOST shortcut run --category logs --name newapi-errors --detail --json
 server-md --reveal redact-check <paths...> --json
 ```
 
-Do not use `--reveal` for routine diagnostics, examples, docs, or A/B tests.
+Mask token 使用稳定格式 `__MASKED_TYPE_hash__`，例如 `__MASKED_HOST_ab12cd34ef__`。同一 CLI 安装目录内首次运行会生成持久 salt，因此同一真实值会稳定映射到同一 token，方便跨行判断一致性；不同机器/安装目录不共享 salt。`--reveal` 支持一次传多个类型或多个具体 mask token：传类型会 reveal 该类型全部值，传具体 token 只 reveal 对应值。
 
 ## 核心原则
 

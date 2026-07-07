@@ -19,7 +19,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-REVEAL_SECRETS = False
+REVEAL_ALL = False
+REVEAL_SELECTORS: set[str] = set()
+MASK_SALT: str | None = None
 
 
 SECRET_PATTERNS = [
@@ -41,37 +43,95 @@ SENSITIVE_NETWORK_KEYS = {
 
 SENSITIVE_NETWORK_TEXT_KEYS = {"output", "stdout", "stderr"}
 
+MASK_TYPE_ALIASES = {
+    "SECRET": "SECRET",
+    "TOKEN": "SECRET",
+    "OPENAIKEY": "OPENAIKEY",
+    "OPENAI_KEY": "OPENAIKEY",
+    "HOST": "HOST",
+    "IP": "IP",
+    "SSH_KEY": "SSH_KEY",
+    "SSH_FINGERPRINT": "SSH_KEY",
+    "COMMAND": "COMMAND",
+}
+
 NETWORK_PATTERNS = [
-    re.compile(r"SHA256:[A-Za-z0-9+/=]{16,}"),
-    re.compile(r"\bMD5:(?:[0-9a-f]{2}:){15}[0-9a-f]{2}\b", re.I),
-    re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
-    re.compile(r"\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?){2,}\b", re.I),
+    ("SSH_KEY", re.compile(r"SHA256:[A-Za-z0-9+/=]{16,}")),
+    ("SSH_KEY", re.compile(r"\bMD5:(?:[0-9a-f]{2}:){15}[0-9a-f]{2}\b", re.I)),
+    ("IP", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")),
+    ("HOST", re.compile(r"\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?){2,}\b", re.I)),
 ]
+
+OPENAI_KEY_PATTERN = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b")
 
 def is_sensitive_key(key: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]", "", key.lower())
     return any(part.replace("_", "") in normalized for part in SENSITIVE_KEY_PARTS)
 
 
-def mask_scalar(value: str) -> str:
-    if len(value) <= 8:
-        return "***"
-    return f"{value[:4]}***{value[-4:]}"
+def canonical_mask_type(mask_type: str) -> str:
+    normalized = re.sub(r"[^A-Z0-9_]", "_", mask_type.upper()).strip("_")
+    return MASK_TYPE_ALIASES.get(normalized, normalized or "SECRET")
 
 
-def mask_network_value(value: str) -> str:
+def mask_salt_path() -> Path:
+    override = os.environ.get("SERVER_MD_MASK_SALT_FILE")
+    if override:
+        return Path(override).expanduser()
+    return Path(__file__).resolve().parent / ".server-md-mask-salt"
+
+
+def get_mask_salt() -> str:
+    global MASK_SALT
+    if MASK_SALT:
+        return MASK_SALT
+    path = mask_salt_path()
+    if path.exists():
+        MASK_SALT = path.read_text(encoding="utf-8").strip()
+    if not MASK_SALT:
+        MASK_SALT = secrets.token_hex(32)
+        try:
+            path.write_text(MASK_SALT + "\n", encoding="utf-8")
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
+        except OSError:
+            # If the installed skill directory is read-only, keep a process-local salt.
+            pass
+    return MASK_SALT
+
+
+def mask_token(mask_type: str, value: str) -> str:
+    kind = canonical_mask_type(mask_type)
+    digest = hashlib.sha256((get_mask_salt() + "\0" + kind + "\0" + value).encode("utf-8", errors="ignore")).hexdigest()[:10]
+    token = f"__MASKED_{kind}_{digest}__"
+    if REVEAL_ALL or kind in REVEAL_SELECTORS or token in REVEAL_SELECTORS:
+        return value
+    return token
+
+
+def mask_scalar(value: str, mask_type: str = "SECRET") -> str:
+    return mask_token(mask_type, value)
+
+
+def mask_network_value(value: str, mask_type: str | None = None) -> str:
     if not value:
         return value
-    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", value):
-        return "***.***.***.*** (masked; use server connect/run with explicit authorization)"
-    if "." in value and re.fullmatch(r"[A-Za-z0-9._-]+", value):
-        return "***.*** (masked; use server connect/run with explicit authorization)"
-    return "*** (masked; use server connect/run with explicit authorization)"
+    kind = mask_type
+    if not kind:
+        if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", value):
+            kind = "IP"
+        elif "." in value and re.fullmatch(r"[A-Za-z0-9._-]+", value):
+            kind = "HOST"
+        else:
+            kind = "COMMAND"
+    return mask_token(kind, value)
 
 
 def mask_network_text(text: str) -> str:
-    for pattern in NETWORK_PATTERNS:
-        text = pattern.sub(lambda m: mask_network_value(m.group(0)), text)
+    for kind, pattern in NETWORK_PATTERNS:
+        text = pattern.sub(lambda m, k=kind: mask_network_value(m.group(0), k), text)
     return text
 
 
@@ -81,21 +141,22 @@ def is_sensitive_network_key(key: str) -> bool:
 
 
 def mask_secret_text(text: str) -> str:
+    text = OPENAI_KEY_PATTERN.sub(lambda m: mask_token("OPENAIKEY", m.group(0)), text)
     text = re.sub(
         r"Bearer\s+([A-Za-z0-9._~+/=-]{20,})",
-        lambda m: "Bearer " + mask_scalar(m.group(1)),
+        lambda m: "Bearer " + mask_token("SECRET", m.group(1)),
         text,
         flags=re.I,
     )
     text = re.sub(
         r"((?:TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CLIENT_SECRET|API_KEY|AUTHORIZATION|ADMIN_TOKEN|API_TOKEN)\s*=\s*)([^\s#]+)",
-        lambda m: m.group(1) + mask_scalar(m.group(2)),
+        lambda m: m.group(1) + mask_token("SECRET", m.group(2)),
         text,
         flags=re.I,
     )
     text = re.sub(
         r"nodekey:([A-Za-z0-9._~+/=-]+)",
-        lambda m: "nodekey:" + mask_scalar(m.group(1)),
+        lambda m: "nodekey:" + mask_token("SECRET", m.group(1)),
         text,
         flags=re.I,
     )
@@ -103,13 +164,11 @@ def mask_secret_text(text: str) -> str:
 
 
 def mask_data(data: Any, parent_key: str = "") -> Any:
-    if REVEAL_SECRETS:
-        return data
     if isinstance(data, dict):
         out = {}
         for key, value in data.items():
             if is_sensitive_key(str(key)) and isinstance(value, str):
-                out[key] = mask_scalar(value) + " (masked; pass --reveal before the subcommand to show)"
+                out[key] = mask_scalar(value, "SECRET")
             elif is_sensitive_network_key(str(key)) and isinstance(value, str):
                 out[key] = mask_network_value(value)
             elif re.sub(r"[^a-z0-9_]", "_", str(key).lower()).strip("_") in SENSITIVE_NETWORK_TEXT_KEYS and isinstance(value, str):
@@ -1228,6 +1287,13 @@ def command_hint(argv: list[str]) -> str | None:
         return f"Unknown command '{top} {sub}'.{suffix}"
     return None
 
+def normalize_reveal_selector(raw: str) -> str:
+    value = raw.strip()
+    if re.fullmatch(r"__MASKED_[A-Z0-9_]+_[0-9a-f]{10}__", value):
+        return value
+    return canonical_mask_type(value)
+
+
 def add_limit_args(parser: argparse.ArgumentParser, default: int = 20) -> None:
     parser.add_argument("--limit", type=int, default=default, help="Show first N records; use 0 for all.")
     parser.add_argument("--tail", action="store_true", help="Show the last N records instead of the first N.")
@@ -1245,7 +1311,7 @@ def add_state_write_args(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="server-md", description="Query and maintain server-md.json sidecar data; SERVER.md is informational only.")
-    p.add_argument("--reveal", action="store_true", help="Reveal secret-like values in output; default masks them.")
+    p.add_argument("--reveal", action="store_true", help="Reveal masked values. Optionally put one or more TYPE or __MASKED_TYPE_hash__ selectors after --reveal and before the subcommand.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     locate = sub.add_parser("locate", help="Locate canonical sidecar and informational SERVER.md path.")
@@ -1533,15 +1599,38 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def extract_reveal_selectors(argv: list[str]) -> tuple[list[str], list[str] | None]:
+    if "--reveal" not in argv:
+        return argv, None
+    idx = argv.index("--reveal")
+    cleaned = argv[:idx] + ["--reveal"]
+    selectors: list[str] = []
+    j = idx + 1
+    command_names = set(COMMAND_TREE)
+    while j < len(argv):
+        token = argv[j]
+        if token.startswith("-") or token in command_names:
+            break
+        selectors.append(token)
+        j += 1
+    cleaned += argv[j:]
+    return cleaned, selectors
+
+
 def main() -> None:
-    global REVEAL_SECRETS
-    hint = command_hint(sys.argv[1:])
+    global REVEAL_ALL, REVEAL_SELECTORS
+    argv, reveal_selectors = extract_reveal_selectors(sys.argv[1:])
+    hint = command_hint(argv)
     if hint:
         print(f"server-md: {hint}", file=sys.stderr)
         raise SystemExit(2)
     parser = build_parser()
-    args = parser.parse_args()
-    REVEAL_SECRETS = bool(getattr(args, "reveal", False))
+    args = parser.parse_args(argv)
+    if getattr(args, "reveal", False):
+        if reveal_selectors:
+            REVEAL_SELECTORS = {normalize_reveal_selector(item) for item in reveal_selectors}
+        else:
+            REVEAL_ALL = True
     args.func(args)
 
 
