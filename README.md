@@ -199,6 +199,9 @@ server-md locate --json
 server-md server brief --name prod --tag web --json
 server-md resource list --server prod --tag web --json
 server-md shortcut list --server prod --tag web --json
+
+# Inspect the bundled sanitized sidecar example
+server-md server brief --sidecar ~/.claude/skills/server-md/examples/server-md.example.json --name prod --tag web --json
 ```
 
 ---

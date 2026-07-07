@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "role": "canonical",
+  "priority": 100,
+  "markdown": "SERVER.md",
+  "environment_hint": "linux",
+  "tags": [
+    "example",
+    "main-copy"
+  ],
+  "execution": {
+    "default_mode": "render",
+    "log": "~/.server-md/ops.jsonl",
+    "confirm_salt": "replace-with-local-random-value"
+  },
+  "servers": {
+    "example-prod": {
+      "aliases": [
+        "prod",
+        "web-prod"
+      ],
+      "role": "Example production application host",
+      "user": "deploy",
+      "public_host": "prod.example.com",
+      "public_ip": "203.0.113.10",
+      "tailnet_ip": "100.64.0.10",
+      "magic_dns": "example-prod.tailnet.example",
+      "identity": "~/.ssh/example_prod_key",
+      "notes_file": "server-notes/example-prod.md",
+      "risk": "production",
+      "tags": [
+        "production",
+        "web"
+      ],
+      "warnings": [
+        "Production host; prefer read-only checks before changes."
+      ],
+      "tips": [
+        "Use server brief --name prod --tag web for compact context."
+      ],
+      "constraints": [
+        "Do not print environment-file contents or secrets."
+      ]
+    },
+    "example-staging": {
+      "aliases": [
+        "staging",
+        "web-staging"
+      ],
+      "role": "Example staging application host",
+      "user": "deploy",
+      "public_host": "staging.example.com",
+      "public_ip": "203.0.113.20",
+      "tailnet_ip": "100.64.0.20",
+      "magic_dns": "example-staging.tailnet.example",
+      "identity": "~/.ssh/example_staging_key",
+      "notes_file": "server-notes/example-staging.md",
+      "risk": "medium",
+      "tags": [
+        "staging",
+        "web"
+      ]
+    }
+  },
+  "resources": {
+    "example-prod-root": {
+      "server": "example-prod",
+      "kind": "project",
+      "path": "/srv/example-app",
+      "description": "Example application deployment root.",
+      "risk": "medium",
+      "tags": [
+        "production",
+        "web"
+      ]
+    },
+    "example-prod-env": {
+      "server": "example-prod",
+      "kind": "config",
+      "path": "/etc/example-app/prod.env",
+      "description": "Environment file path only; do not print contents.",
+      "risk": "high",
+      "tags": [
+        "production",
+        "secret-path"
+      ],
+      "warnings": [
+        "Contains secrets; record only the path."
+      ]
+    },
+    "example-prod-db": {
+      "server": "example-prod",
+      "kind": "data",
+      "path": "/var/lib/example-app/prod.db",
+      "description": "Example production database path.",
+      "risk": "high",
+      "tags": [
+        "production",
+        "database"
+      ]
+    }
+  },
+  "shortcuts": {
+    "health": {
+      "example-prod-public": {
+        "host": "example-prod",
+        "description": "Check example production public health endpoint.",
+        "command": "curl -fsS https://prod.example.com/healthz",
+        "risk": "read-only",
+        "execute_mode": "render",
+        "tags": [
+          "production",
+          "web"
+        ]
+      }
+    },
+    "status": {
+      "example-prod-service": {
+        "host": "example-prod",
+        "description": "Render a read-only service status command.",
+        "command": "ssh -i ~/.ssh/example_prod_key deploy@example-prod.tailnet.example 'systemctl status example-app --no-pager'",
+        "risk": "read-only",
+        "execute_mode": "render",
+        "tags": [
+          "production",
+          "web"
+        ]
+      }
+    },
+    "deploy": {
+      "restart-example-prod": {
+        "host": "example-prod",
+        "description": "Restart example production service after explicit confirmation.",
+        "command": "ssh -i ~/.ssh/example_prod_key deploy@example-prod.tailnet.example 'sudo systemctl restart example-app && curl -fsS http://127.0.0.1:8080/healthz'",
+        "risk": "high",
+        "execute_mode": "render",
+        "confirm": true,
+        "tags": [
+          "production",
+          "restart"
+        ],
+        "warnings": [
+          "Requires explicit user confirmation before execution."
+        ]
+      }
+    }
+  },
+  "notes": "Sanitized example sidecar. Replace every host, path, command, and salt before real use. Do not store secrets here."
+}
