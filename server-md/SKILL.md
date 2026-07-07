@@ -34,7 +34,7 @@ allowed-tools: Bash
 ### 允许的常用命令
 
 - `locate --json`：返回 compact 主副本/sidecar 定位；默认不要 `--verbose`。
-- `server list|resolve|connect|brief`：服务器查询；`connect` 只渲染 SSH 命令，不执行。
+- `server list|resolve|connect|probe|brief`：服务器查询；`connect` 只渲染 SSH 命令，不执行；`probe` 做连通性排查。
 - `resource list|show|add`：资源查询/注册，支持 `warnings`、`tips`、`constraints`。
 - `shortcut list|show|add|run`：快捷命令查询/渲染，支持 `--server`、`--tag`、warnings/tips/constraints。
 - `redact-check`：发布前脱敏扫描。
@@ -57,32 +57,39 @@ server-md env --json
 ### server
 
 ```bash
-server-md server list --json
+server-md server list --status active --traffic-role primary --limit 20 --json
+server-md server list --tail --limit 5 --json
 server-md server resolve --name <name-or-alias> --json
 server-md server connect --name <name-or-alias> --prefer tailnet --json
-server-md server brief --name <name-or-alias> --tag <topic> --json
-server-md server register --name <name> --alias <alias> --user <user> --magic-dns <host> --json
+server-md server probe --name <name-or-alias> --prefer auto --timeout 5 --json
+server-md server probe --name <name-or-alias> --ssh --json
+server-md server brief --name <name-or-alias> --tag <topic> --status active --limit 20 --json
+server-md server register --name <name> --alias <alias> --user <user> --magic-dns <host> --status active --traffic-role primary --json
 ```
 
 Notes:
 - `connect` only renders an SSH command; do not execute it unless the user asks.
+- `probe` collects DNS, TCP/22, and optional SSH findings in one result; use it for connectivity troubleshooting before guessing.
+- List-like commands use `--limit` and optional `--tail` for compact head/tail-style output.
+- `--status` filters lifecycle state (`active`, `staging`, `deprecated`, `retired`, `disabled`, `unknown`); `--traffic-role` filters serving role (`primary`, `secondary`, `staging`, `none`).
 - Optional fields such as `tailnet_ip`, `magic_dns`, `public_ip`, `public_host`, `identity`, `proxy_command`, `notes_file`, `user`, and `port` may be absent.
 - Prefer omitting unknown optional fields over writing empty strings.
 
 ### resource
 
 ```bash
-server-md resource list --server <name-or-alias> --tag <topic> --json
+server-md resource list --server <name-or-alias> --tag <topic> --status active --limit 20 --json
+server-md resource list --status retired --tail --limit 10 --json
 server-md resource show --name <resource-name> --json
-server-md resource add --name <name> --server <server> --kind project --path <path> --tag <tag> --json
+server-md resource add --name <name> --server <server> --kind project --path <path> --tag <tag> --status active --traffic-role primary --json
 ```
 
 ### shortcut
 
 ```bash
-server-md shortcut list --server <name-or-alias> --tag <topic> --json
+server-md shortcut list --server <name-or-alias> --tag <topic> --status active --limit 20 --json
 server-md shortcut show --category <category> --name <name> --json
-server-md shortcut add --category health --name <name> --host <server> --command '<cmd>' --risk read-only --execute-mode render --json
+server-md shortcut add --category health --name <name> --host <server> --command '<cmd>' --risk read-only --execute-mode render --status active --traffic-role primary --json
 server-md shortcut challenge --category <category> --name <name> --json
 server-md shortcut run --category <category> --name <name> --json
 server-md shortcut run --category <category> --name <name> --confirm-code <code> --json
@@ -98,10 +105,10 @@ Rules:
 
 ```bash
 server-md inventory init --json
-server-md inventory list --kind hosts --json
-server-md inventory list --kind services --host <host> --tag <tag> --json
-server-md inventory host-set --name <host> --tailnet-ip <ip> --tag <tag> --json
-server-md inventory service-set --name <service> --host <host> --unit <unit> --healthcheck <url> --json
+server-md inventory list --kind hosts --status active --limit 20 --json
+server-md inventory list --kind services --host <host> --tag <tag> --traffic-role primary --json
+server-md inventory host-set --name <host> --tailnet-ip <ip> --tag <tag> --status active --json
+server-md inventory service-set --name <service> --host <host> --unit <unit> --healthcheck <url> --status active --traffic-role primary --json
 server-md inventory validate --json
 ```
 

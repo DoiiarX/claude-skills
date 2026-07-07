@@ -12,6 +12,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -310,7 +311,11 @@ def render_ssh_command(spec: dict[str, Any], prefer: str = "auto") -> str:
     if spec.get("ssh_extra") and isinstance(spec["ssh_extra"], list):
         parts += [str(x) for x in spec["ssh_extra"]]
     parts.append(f"{user}@{target_host}")
-    return " ".join(parts)
+    return shlex.join(parts)
+
+
+def ssh_command_parts(spec: dict[str, Any], prefer: str = "auto") -> list[str]:
+    return shlex.split(render_ssh_command(spec, prefer))
 
 
 def sidecar_priority(data: dict[str, Any] | None, role: str) -> int:
@@ -426,19 +431,20 @@ def cmd_locate(args: argparse.Namespace) -> None:
     emit(data, args.json)
 
 
-def paginate_items(items: list[Any], page: int, page_size: int) -> dict[str, Any]:
-    if page_size <= 0:
-        return {"items": items, "page": 1, "page_size": 0, "total": len(items), "has_next": False, "next_page": None}
-    page = max(page, 1)
-    start = (page - 1) * page_size
-    end = start + page_size
+def limit_items(items: list[Any], limit: int = 20, tail: bool = False) -> dict[str, Any]:
+    total = len(items)
+    if limit <= 0:
+        shown = items
+    elif tail:
+        shown = items[-limit:]
+    else:
+        shown = items[:limit]
     return {
-        "items": items[start:end],
-        "page": page,
-        "page_size": page_size,
-        "total": len(items),
-        "has_next": end < len(items),
-        "next_page": page + 1 if end < len(items) else None,
+        "items": shown,
+        "limit": limit,
+        "tail": tail,
+        "total": total,
+        "truncated": len(shown) < total,
     }
 
 
@@ -447,6 +453,23 @@ def filter_items(items: list[dict[str, Any]], query: str | None) -> list[dict[st
         return items
     q = query.lower()
     return [item for item in items if q in json.dumps(item, ensure_ascii=False).lower()]
+
+
+def filter_state(items: list[dict[str, Any]], status: str | None = None, traffic_role: str | None = None) -> list[dict[str, Any]]:
+    if status:
+        items = [item for item in items if item.get("status") == status]
+    if traffic_role:
+        items = [item for item in items if item.get("traffic_role") == traffic_role]
+    return items
+
+
+def run_probe(label: str, command: list[str], timeout: int) -> dict[str, Any]:
+    try:
+        result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
+        output = (result.stdout + result.stderr).strip()
+        return {"label": label, "command": command, "ok": result.returncode == 0, "returncode": result.returncode, "output": output[-2000:]}
+    except Exception as exc:
+        return {"label": label, "command": command, "ok": False, "error": str(exc)}
 
 
 def cmd_redact_check(args: argparse.Namespace) -> None:
@@ -523,7 +546,8 @@ def cmd_inventory_list(args: argparse.Namespace) -> None:
         result = [item for item in result if (wanted & set(item.get("tags", [])))]
     if args.host:
         result = [item for item in result if item.get("host") == args.host or item.get("name") == args.host]
-    emit({"inventory": str(path), "kind": args.kind, "results": paginate_items(result, args.page, args.page_size)}, args.json)
+    result = filter_state(result, args.status, args.traffic_role)
+    emit({"inventory": str(path), "kind": args.kind, "results": limit_items(result, args.limit, args.tail)}, args.json)
 
 
 def cmd_host_set(args: argparse.Namespace) -> None:
@@ -541,6 +565,8 @@ def cmd_host_set(args: argparse.Namespace) -> None:
         "ssh": args.ssh,
         "risk": args.risk,
         "notes_file": args.notes_file,
+        "status": args.status,
+        "traffic_role": args.traffic_role,
     }
     for key, value in fields.items():
         if value not in (None, ""):
@@ -567,6 +593,8 @@ def cmd_service_set(args: argparse.Namespace) -> None:
         "healthcheck": args.healthcheck,
         "risk": args.risk,
         "notes_file": args.notes_file,
+        "status": args.status,
+        "traffic_role": args.traffic_role,
     }
     for key, value in fields.items():
         if value not in (None, ""):
@@ -608,6 +636,12 @@ def cmd_server_brief(args: argparse.Namespace) -> None:
         shortcuts = [r for r in shortcuts if (wanted & set(r.get("tags", [])))]
     resources = [r for r in resources if r.get("server") in {args.name, name}]
     shortcuts = [r for r in shortcuts if r.get("host") in {args.name, name}]
+    if args.status:
+        resources = [r for r in resources if r.get("status") == args.status]
+        shortcuts = [r for r in shortcuts if r.get("status") == args.status]
+    if args.traffic_role:
+        resources = [r for r in resources if r.get("traffic_role") == args.traffic_role]
+        shortcuts = [r for r in shortcuts if r.get("traffic_role") == args.traffic_role]
     if args.filter:
         resources = filter_items(resources, args.filter)
         shortcuts = filter_items(shortcuts, args.filter)
@@ -615,8 +649,8 @@ def cmd_server_brief(args: argparse.Namespace) -> None:
         "sidecar": str(path),
         "name": name,
         "server": spec,
-        "resources": paginate_items(resources, args.page, args.page_size),
-        "shortcuts": paginate_items(shortcuts, args.page, args.page_size),
+        "resources": limit_items(resources, args.limit, args.tail),
+        "shortcuts": limit_items(shortcuts, args.limit, args.tail),
     }, args.json)
 
 
@@ -632,8 +666,12 @@ def cmd_resource_list(args: argparse.Namespace) -> None:
     if args.tag:
         wanted = set(args.tag)
         rows = [r for r in rows if (wanted & set(r.get("tags", [])))]
+    if args.status:
+        rows = [r for r in rows if r.get("status") == args.status]
+    if args.traffic_role:
+        rows = [r for r in rows if r.get("traffic_role") == args.traffic_role]
     rows = filter_items(rows, args.filter)
-    emit({"sidecar": str(path), "results": paginate_items(rows, args.page, args.page_size)}, args.json)
+    emit({"sidecar": str(path), "results": limit_items(rows, args.limit, args.tail)}, args.json)
 
 
 def cmd_resource_add(args: argparse.Namespace) -> None:
@@ -659,6 +697,8 @@ def cmd_resource_add(args: argparse.Namespace) -> None:
         "owner": args.owner,
         "notes_file": args.notes_file,
         "risk": args.risk,
+        "status": args.status,
+        "traffic_role": args.traffic_role,
         "warnings": args.warning or [],
         "tips": args.tip or [],
         "constraints": args.constraint or [],
@@ -686,8 +726,9 @@ def cmd_server_list(args: argparse.Namespace) -> None:
     if args.tag:
         wanted = set(args.tag)
         rows = [r for r in rows if (wanted & set(r.get("tags", [])))]
+    rows = filter_state(rows, args.status, args.traffic_role)
     rows = filter_items(rows, args.filter)
-    emit({"sidecar": str(path), "results": paginate_items(rows, args.page, args.page_size)}, args.json)
+    emit({"sidecar": str(path), "results": limit_items(rows, args.limit, args.tail)}, args.json)
 
 
 def cmd_server_register(args: argparse.Namespace) -> None:
@@ -711,6 +752,8 @@ def cmd_server_register(args: argparse.Namespace) -> None:
         "proxy_command": args.proxy_command,
         "notes_file": args.notes_file,
         "risk": args.risk,
+        "status": args.status,
+        "traffic_role": args.traffic_role,
     }
     for key, value in fields.items():
         if value not in (None, ""):
@@ -755,6 +798,39 @@ def cmd_server_connect(args: argparse.Namespace) -> None:
     }, args.json)
 
 
+def cmd_server_probe(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    name, spec = find_server(data, args.name)
+    if not spec:
+        raise SystemExit(f"Server not found: {args.name}. Try: server-md server list --filter {args.name} --json")
+    hosts = []
+    for key in ["magic_dns", "tailnet_ip", "public_host", "public_ip"]:
+        value = spec.get(key)
+        if value:
+            hosts.append({"field": key, "host": str(value)})
+    probes = []
+    for item in hosts:
+        host = item["host"]
+        if not re.match(r"^[0-9.]+$", host):
+            probes.append(run_probe(f"dns:{item['field']}", ["getent", "hosts", host], args.timeout))
+        probes.append(run_probe(f"tcp22:{item['field']}", ["bash", "-lc", f"timeout {args.timeout} bash -lc '</dev/tcp/{host}/22'"], args.timeout + 2))
+    if args.ssh:
+        command = ssh_command_parts(spec, args.prefer)
+        command += ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={args.timeout}", "true"]
+        probes.append(run_probe("ssh", command, args.timeout + 5))
+    summary = []
+    if not hosts:
+        summary.append("No host fields found; set magic_dns, tailnet_ip, public_host, or public_ip.")
+    if any(p["label"].startswith("dns:") and not p.get("ok") for p in probes):
+        summary.append("DNS lookup failed for at least one hostname.")
+    if hosts and not any(p["label"].startswith("tcp22:") and p.get("ok") for p in probes):
+        summary.append("No SSH port connectivity succeeded; check IP reachability, firewall, security group, or tailnet status.")
+    if args.ssh and any(p["label"] == "ssh" and not p.get("ok") for p in probes):
+        summary.append("SSH handshake failed; check key path/permissions, username, host key, or publickey authorization.")
+    emit({"sidecar": str(path), "name": name, "hosts": hosts, "probes": probes, "summary": summary, "ok": not summary}, args.json)
+
+
 def cmd_shortcut_list(args: argparse.Namespace) -> None:
     path = resolve_sidecar_path(args.sidecar)
     data = load_sidecar_path(path)
@@ -767,8 +843,9 @@ def cmd_shortcut_list(args: argparse.Namespace) -> None:
     if args.tag:
         wanted = set(args.tag)
         rows = [r for r in rows if (wanted & set(r.get("tags", [])))]
+    rows = filter_state(rows, args.status, args.traffic_role)
     rows = filter_items(rows, args.filter)
-    emit({"sidecar": str(path), "results": paginate_items(rows, args.page, args.page_size)}, args.json)
+    emit({"sidecar": str(path), "results": limit_items(rows, args.limit, args.tail)}, args.json)
 
 
 def cmd_shortcut_show(args: argparse.Namespace) -> None:
@@ -803,6 +880,8 @@ def cmd_shortcut_add(args: argparse.Namespace) -> None:
         "constraints": args.constraint or [],
         "tags": args.tag or [],
         "confirm": bool(args.confirm),
+        "status": args.status,
+        "traffic_role": args.traffic_role,
         "notes": args.notes or "",
     }
     category[args.name] = {k: v for k, v in spec.items() if v not in (None, "", [])}
@@ -973,7 +1052,7 @@ COMMAND_TREE = {
     "redact-check": [],
     "init": [],
     "resource": ["list", "show", "add"],
-    "server": ["list", "register", "resolve", "connect", "brief"],
+    "server": ["list", "register", "resolve", "connect", "probe", "brief"],
     "shortcut": ["list", "show", "add", "challenge", "run"],
     "inventory": ["init", "list", "host-set", "service-set", "validate"],
 }
@@ -1013,6 +1092,21 @@ def command_hint(argv: list[str]) -> str | None:
         return f"Unknown command '{top} {sub}'.{suffix}"
     return None
 
+def add_limit_args(parser: argparse.ArgumentParser, default: int = 20) -> None:
+    parser.add_argument("--limit", type=int, default=default, help="Show first N records; use 0 for all.")
+    parser.add_argument("--tail", action="store_true", help="Show the last N records instead of the first N.")
+
+
+def add_state_filter_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--status", help="Filter by lifecycle status, e.g. active, staging, deprecated, retired, disabled, unknown.")
+    parser.add_argument("--traffic-role", help="Filter by traffic role, e.g. primary, secondary, staging, none.")
+
+
+def add_state_write_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--status", help="Set lifecycle status, e.g. active, staging, deprecated, retired, disabled, unknown.")
+    parser.add_argument("--traffic-role", help="Set traffic role, e.g. primary, secondary, staging, none.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="server-md", description="Query and maintain server-md.json sidecar data; SERVER.md is informational only.")
     p.add_argument("--reveal", action="store_true", help="Reveal secret-like values in output; default masks them.")
@@ -1036,14 +1130,14 @@ def build_parser() -> argparse.ArgumentParser:
     res = sub.add_parser("resource", help="Register and find important server projects, directories, repos, configs, and data paths.")
     res_sub = res.add_subparsers(dest="resource_cmd", required=True)
 
-    res_list = res_sub.add_parser("list", help="List important resources with pagination and filters.")
+    res_list = res_sub.add_parser("list", help="List important resources with limit and filters.")
     res_list.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
     res_list.add_argument("--server", help="Filter by server name or alias.")
     res_list.add_argument("--kind", choices=["project", "directory", "repo", "config", "data", "backup", "service", "other"], help="Filter by resource kind.")
     res_list.add_argument("--tag", action="append", help="Filter by tag; repeatable.")
     res_list.add_argument("--filter", help="Case-insensitive substring filter across resource record.")
-    res_list.add_argument("--page", type=int, default=1, help="Page number, starting at 1.")
-    res_list.add_argument("--page-size", type=int, default=20, help="Items per page; 0 disables pagination.")
+    add_state_filter_args(res_list)
+    add_limit_args(res_list)
     res_list.add_argument("--json", action="store_true", help="Emit JSON.")
     res_list.set_defaults(func=cmd_resource_list)
 
@@ -1058,6 +1152,7 @@ def build_parser() -> argparse.ArgumentParser:
     res_add.add_argument("--owner")
     res_add.add_argument("--notes-file")
     res_add.add_argument("--risk", choices=["read-only", "low", "medium", "high"], default="read-only")
+    add_state_write_args(res_add)
     res_add.add_argument("--warning", action="append", help="Resource warning; repeatable.")
     res_add.add_argument("--tip", action="append", help="Resource tip; repeatable.")
     res_add.add_argument("--constraint", action="append", help="Resource constraint; repeatable.")
@@ -1076,12 +1171,12 @@ def build_parser() -> argparse.ArgumentParser:
     srv = sub.add_parser("server", help="Register and resolve servers from server-md.json; renders built-in SSH connection commands.")
     srv_sub = srv.add_subparsers(dest="server_cmd", required=True)
 
-    srv_list = srv_sub.add_parser("list", help="List registered servers with pagination and filters.")
+    srv_list = srv_sub.add_parser("list", help="List registered servers with limit and filters.")
     srv_list.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
     srv_list.add_argument("--tag", action="append", help="Filter by tag; repeatable.")
     srv_list.add_argument("--filter", help="Case-insensitive substring filter across server record.")
-    srv_list.add_argument("--page", type=int, default=1, help="Page number, starting at 1.")
-    srv_list.add_argument("--page-size", type=int, default=20, help="Items per page; 0 disables pagination.")
+    add_state_filter_args(srv_list)
+    add_limit_args(srv_list)
     srv_list.add_argument("--json", action="store_true", help="Emit JSON.")
     srv_list.set_defaults(func=cmd_server_list)
 
@@ -1100,6 +1195,7 @@ def build_parser() -> argparse.ArgumentParser:
     srv_reg.add_argument("--proxy-command")
     srv_reg.add_argument("--notes-file")
     srv_reg.add_argument("--risk")
+    add_state_write_args(srv_reg)
     srv_reg.add_argument("--warning", action="append", help="Server warning; repeatable.")
     srv_reg.add_argument("--tip", action="append", help="Server tip; repeatable.")
     srv_reg.add_argument("--constraint", action="append", help="Server constraint; repeatable.")
@@ -1121,8 +1217,8 @@ def build_parser() -> argparse.ArgumentParser:
     srv_brief.add_argument("--name", required=True)
     srv_brief.add_argument("--tag", action="append", help="Filter resources/shortcuts by tag; repeatable.")
     srv_brief.add_argument("--filter", help="Case-insensitive substring filter across resources and shortcuts.")
-    srv_brief.add_argument("--page", type=int, default=1, help="Page number, starting at 1.")
-    srv_brief.add_argument("--page-size", type=int, default=20, help="Items per page; 0 disables pagination.")
+    add_state_filter_args(srv_brief)
+    add_limit_args(srv_brief)
     srv_brief.add_argument("--json", action="store_true", help="Emit JSON.")
     srv_brief.set_defaults(func=cmd_server_brief)
 
@@ -1133,17 +1229,26 @@ def build_parser() -> argparse.ArgumentParser:
     srv_conn.add_argument("--json", action="store_true", help="Emit JSON.")
     srv_conn.set_defaults(func=cmd_server_connect)
 
+    srv_probe = srv_sub.add_parser("probe", help="Run DNS, TCP/22, and optional SSH probes for one server; reports all findings at once.")
+    srv_probe.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    srv_probe.add_argument("--name", required=True)
+    srv_probe.add_argument("--prefer", choices=["auto", "tailnet", "public"], default="auto")
+    srv_probe.add_argument("--timeout", type=int, default=5)
+    srv_probe.add_argument("--ssh", action="store_true", help="Also attempt a BatchMode SSH handshake.")
+    srv_probe.add_argument("--json", action="store_true", help="Emit JSON.")
+    srv_probe.set_defaults(func=cmd_server_probe)
+
     sc = sub.add_parser("shortcut", help="Manage registered server shortcut commands in server-md.json; never executes them.")
     sc_sub = sc.add_subparsers(dest="shortcut_cmd", required=True)
 
-    sc_list = sc_sub.add_parser("list", help="List registered shortcuts with pagination and filters.")
+    sc_list = sc_sub.add_parser("list", help="List registered shortcuts with limit and filters.")
     sc_list.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
     sc_list.add_argument("--server", help="Filter by server name or alias.")
     sc_list.add_argument("--category", help="Filter by category.")
     sc_list.add_argument("--tag", action="append", help="Filter by tag; repeatable.")
     sc_list.add_argument("--filter", help="Case-insensitive substring filter across shortcut record.")
-    sc_list.add_argument("--page", type=int, default=1, help="Page number, starting at 1.")
-    sc_list.add_argument("--page-size", type=int, default=20, help="Items per page; 0 disables pagination.")
+    add_state_filter_args(sc_list)
+    add_limit_args(sc_list)
     sc_list.add_argument("--json", action="store_true", help="Emit JSON.")
     sc_list.set_defaults(func=cmd_shortcut_list)
 
@@ -1168,6 +1273,7 @@ def build_parser() -> argparse.ArgumentParser:
     sc_add.add_argument("--constraint", action="append", help="Shortcut constraint; repeatable.")
     sc_add.add_argument("--tag", action="append")
     sc_add.add_argument("--confirm", action="store_true", help="Mark shortcut as requiring explicit confirmation before any agent runs it.")
+    add_state_write_args(sc_add)
     sc_add.add_argument("--notes")
     sc_add.add_argument("--dry-run", action="store_true", help="Preview without writing.")
     sc_add.add_argument("--force", action="store_true", help="Update an existing shortcut.")
@@ -1209,8 +1315,8 @@ def build_parser() -> argparse.ArgumentParser:
     inv_list.add_argument("--tag", action="append", help="Filter by tag; repeatable.")
     inv_list.add_argument("--host", help="Filter services by host, or match a host name.")
     inv_list.add_argument("--filter", help="Case-insensitive substring filter across JSON record.")
-    inv_list.add_argument("--page", type=int, default=1, help="Page number, starting at 1.")
-    inv_list.add_argument("--page-size", type=int, default=20, help="Items per page; 0 disables pagination.")
+    add_state_filter_args(inv_list)
+    add_limit_args(inv_list)
     inv_list.add_argument("--json", action="store_true", help="Emit JSON.")
     inv_list.set_defaults(func=cmd_inventory_list)
 
@@ -1225,6 +1331,7 @@ def build_parser() -> argparse.ArgumentParser:
     host_set.add_argument("--magic-dns")
     host_set.add_argument("--ssh")
     host_set.add_argument("--risk")
+    add_state_write_args(host_set)
     host_set.add_argument("--notes-file")
     host_set.add_argument("--tag", action="append")
     host_set.add_argument("--dry-run", action="store_true", help="Preview without writing.")
@@ -1243,6 +1350,7 @@ def build_parser() -> argparse.ArgumentParser:
     svc_set.add_argument("--data-path")
     svc_set.add_argument("--healthcheck")
     svc_set.add_argument("--risk")
+    add_state_write_args(svc_set)
     svc_set.add_argument("--notes-file")
     svc_set.add_argument("--tag", action="append")
     svc_set.add_argument("--dry-run", action="store_true", help="Preview without writing.")

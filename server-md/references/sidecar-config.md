@@ -23,11 +23,24 @@
 
 ## Field rules
 
-- Optional fields may be absent: `tailnet_ip`, `magic_dns`, `public_ip`, `public_host`, `identity`, `proxy_command`, `notes_file`, `user`, `port`.
+- Optional host/contact fields may be absent: `tailnet_ip`, `magic_dns`, `public_ip`, `public_host`, `identity`, `proxy_command`, `notes_file`, `user`, `port`.
 - Prefer omitting unknown optional fields instead of writing empty strings.
 - The CLI should tolerate `null`, missing values, and empty strings in existing sidecars.
 - Do not store secret values. Store paths and operational warnings only.
 
+## Lifecycle fields
+
+Servers, resources, shortcuts, inventory hosts, and inventory services may carry:
+
+- `status`: lifecycle state, usually `active`, `staging`, `deprecated`, `retired`, `disabled`, or `unknown`.
+- `traffic_role`: serving role, usually `primary`, `secondary`, `staging`, or `none`.
+
+List and brief commands support `--status` and `--traffic-role` filters. Write commands support the same fields for setting state.
+
+## List limiting
+
+List-like commands use `--limit N` and optional `--tail` for compact head/tail-style output.
+
 ## Query rule
 
-Normal tasks should use one compact CLI query first, especially `locate --json` or `server brief --json`, and stop when the answer is complete.
+Normal tasks should use one compact CLI query first, especially `locate --json`, `server brief --json`, or `server probe --json` for connectivity diagnostics, and stop when the answer is complete.
