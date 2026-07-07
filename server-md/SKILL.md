@@ -144,33 +144,30 @@ Do not use `--reveal` for routine diagnostics, examples, docs, or A/B tests.
 4. **危险操作先确认**
    - 涉及公网、DNS、生产服务、数据、账号状态、删除、重启、token 轮换时，先给计划和影响，不直接执行。
 
-## 推荐文件结构
+## 文件结构
 
 ```text
 server-md/
 ├── SKILL.md
 ├── server-md
-├── references/
-│   ├── cli-design.md
-│   ├── schema.md
-│   ├── sidecar-config.md
-│   ├── shortcut-execution.md
-│   └── security-redaction.md
-└── evals/
-    └── evals.json
+├── examples/
+│   └── server-md.example.json
+└── references/
+    ├── sidecar-config.md
+    └── operations-workflow.md
 ```
 
 ## 输出风格
 
 - 用简短表格先给结论，再给命令。
-- 明确标注“我读取的是主副本 / 引导文件 / 远程运维卡片”。
+- 明确说明信息来自 `server-md` CLI / sidecar 查询，而不是 Markdown 正文。
 - 当信息可能过期时，给出验证命令，而不是假设仍正确。
 - 如命令涉及重启、删除、DNS、Cloudflare、生产数据库、兑换码作废、token 轮换，先给计划，不要直接执行。
 
 ## 相关参考
 
-普通查询不要打开 references。只有在维护 skill / CLI / schema / eval 时才读对应文件：
+普通查询不要打开 references。只有在维护 skill / CLI / schema / 安全流程时才读对应文件：
 
-- `references/sidecar-config.md` — sidecar schema 维护。
-- `references/operations-workflow.md` — 安全规则维护。
-- `references/security-redaction.md` — 脱敏规则维护。
+- `examples/server-md.example.json` — 完全脱敏的 sidecar 示例。
+- `references/sidecar-config.md` — sidecar schema 与空值规则维护。
+- `references/operations-workflow.md` — shortcut 执行与安全规则维护。
