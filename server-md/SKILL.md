@@ -46,7 +46,7 @@ allowed-tools: Bash
 
 ## CLI 速查
 
-默认输出会 mask secret-like 字段和值，也会 mask IP/host/command 等连接目标。`stdout`/`stderr`/`output` 会保留可读日志内容，但会掩码其中的 secret、IP 和 host。不要主动揭示真实 secret 或网络地址；只有用户明确要求查看真实值时，才使用本节末尾的高级参数。
+默认输出会 mask secret-like 字段和值，也会 mask IP/host/command/SSH 指纹等连接目标。`stdout`/`stderr`/`output` 会保留可读日志内容，但会掩码其中的 secret、IP、host 和 SSH 指纹。不要主动揭示真实 secret 或网络地址；只有用户明确要求查看真实值时，才使用本节末尾的高级参数。
 
 ### locate / env
 
@@ -170,7 +170,7 @@ Do not use `--reveal` for routine diagnostics, examples, docs, or A/B tests.
 3. **敏感信息和网络地址默认不输出**
    - 不要输出 token、密码、私钥、SMTP 授权码、完整 Bearer token、完整 cloudflared token、兑换码私钥等。
    - 默认也不要输出 IP、MagicDNS/public host 和连接命令；平时用别名、shortcut、`connect`/`run` 渲染流程承接。
-   - 远程命令的 `stdout`/`stderr` 可以保留结论性日志内容，但必须掩码其中的 secret、IP 和 host。
+   - 远程命令的 `stdout`/`stderr` 可以保留结论性日志内容，但必须掩码其中的 secret、IP、host 和 SSH 指纹。
    - 命令示例使用环境变量或占位。
 
 4. **危险操作先确认**
