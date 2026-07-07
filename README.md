@@ -178,6 +178,31 @@ done
 
 ---
 
+### [server-md](./server-md/)
+
+Manage a private server inventory through a compact `server-md.json` sidecar. The bundled CLI answers canonical-location, server, resource, and shortcut questions without reading long Markdown notes.
+
+**Features:**
+- Compact `locate`, `server brief`, `resource list`, and `shortcut list` commands
+- Server aliases, resource metadata, tags, warnings, tips, and constraints
+- Render-only operational shortcuts by default
+- Secret masking and `redact-check` before publishing
+
+**Install:**
+```bash
+npx skills add DoiiarX/claude-skills@server-md
+```
+
+**Quick start:**
+```bash
+server-md locate --json
+server-md server brief --name prod --tag web --json
+server-md resource list --server prod --tag web --json
+server-md shortcut list --server prod --tag web --json
+```
+
+---
+
 ## Installation
 
 Skills are installed via the [Skills CLI](https://skills.sh/):
