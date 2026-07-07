@@ -1026,16 +1026,53 @@ def cmd_shortcut_run(args: argparse.Namespace) -> None:
     append_jsonl(log_path, {**base_event, "outcome": "started"})
     completed = subprocess.run(command, shell=True, text=True, capture_output=True, timeout=args.timeout)
     append_jsonl(log_path, {**base_event, "outcome": "completed", "returncode": completed.returncode})
-    emit({
+    stdout = completed.stdout[-args.output_limit:]
+    stderr = completed.stderr[-args.output_limit:]
+    result = {
         **base_event,
         "executed": True,
         "returncode": completed.returncode,
-        "stdout": completed.stdout[-args.output_limit:],
-        "stderr": completed.stderr[-args.output_limit:],
+        "stdout": stdout,
+        "stderr": stderr,
         "log": log_path,
-    }, args.json)
+    }
+    if args.detail:
+        if args.json:
+            emit(result, True)
+        else:
+            emit_detail_text(result)
+    else:
+        masked = mask_data({"stdout": stdout, "stderr": stderr})
+        if args.json:
+            emit({"stdout": masked.get("stdout", ""), "stderr": masked.get("stderr", "")}, True)
+        else:
+            if masked.get("stdout"):
+                print(masked["stdout"], end="" if masked["stdout"].endswith("\n") else "\n")
+            if masked.get("stderr"):
+                print(masked["stderr"], end="" if masked["stderr"].endswith("\n") else "\n", file=sys.stderr)
     if completed.returncode:
         sys.exit(completed.returncode)
+
+
+def emit_detail_text(data: dict[str, Any]) -> None:
+    masked = mask_data(data)
+    print(f"event={masked.get('event')}")
+    print(f"category={masked.get('category')}")
+    print(f"name={masked.get('name')}")
+    print(f"host={masked.get('host')}")
+    print(f"risk={masked.get('risk')}")
+    print(f"execute_mode={masked.get('execute_mode')}")
+    print(f"executed={masked.get('executed')}")
+    print(f"returncode={masked.get('returncode')}")
+    print(f"log={masked.get('log')}")
+    stdout = masked.get("stdout") or ""
+    stderr = masked.get("stderr") or ""
+    if stdout:
+        print("--- stdout ---")
+        print(stdout, end="" if stdout.endswith("\n") else "\n")
+    if stderr:
+        print("--- stderr ---", file=sys.stderr)
+        print(stderr, end="" if stderr.endswith("\n") else "\n", file=sys.stderr)
 
 
 def cmd_log_path(args: argparse.Namespace) -> None:
@@ -1393,7 +1430,9 @@ def build_parser() -> argparse.ArgumentParser:
     sc_run.add_argument("--log", help="JSONL log path; defaults to execution.log in sidecar.")
     sc_run.add_argument("--timeout", type=int, default=60)
     sc_run.add_argument("--output-limit", type=int, default=4000)
-    sc_run.add_argument("--json", action="store_true", help="Emit JSON.")
+    sc_run.add_argument("--raw", action="store_true", help="Raw mode: print only stdout/stderr; this is the default output shape.")
+    sc_run.add_argument("--detail", action="store_true", help="Detail mode: include metadata plus stdout/stderr.")
+    sc_run.add_argument("--json", action="store_true", help="Emit selected output shape as JSON.")
     sc_run.set_defaults(func=cmd_shortcut_run)
 
     log = sub.add_parser("log", help="Inspect shortcut execution JSONL logs.")

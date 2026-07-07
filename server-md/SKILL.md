@@ -93,8 +93,12 @@ server-md shortcut list --server <name-or-alias> --tag <topic> --status active -
 server-md shortcut show --category <category> --name <name> --json
 server-md shortcut add --category health --name <name> --host <server> --command '<cmd>' --risk read-only --execute-mode render --status active --traffic-role primary --json
 server-md shortcut challenge --category <category> --name <name> --json
-server-md shortcut run --category <category> --name <name> --json
-server-md shortcut run --category <category> --name <name> --confirm-code <code> --json
+server-md shortcut run --category <category> --name <name> --execute-mode auto
+server-md shortcut run --category <category> --name <name> --execute-mode auto --raw
+server-md shortcut run --category <category> --name <name> --execute-mode auto --raw --json
+server-md shortcut run --category <category> --name <name> --execute-mode auto --detail
+server-md shortcut run --category <category> --name <name> --execute-mode auto --detail --json
+server-md shortcut run --category <category> --name <name> --confirm-code <code> --detail --json
 ```
 
 Rules:
@@ -102,6 +106,8 @@ Rules:
 - `add` writes shortcut metadata directly into `server-md.json`; do not create wrapper files/directories, clone repositories, or change CLI code just to register a shortcut.
 - A shortcut may target any registered server via `--host <server-or-alias>`; it is not limited to the local machine.
 - `run` follows the registered `execute_mode`: `render`, `manual`, or `auto`.
+- `run` has two output shapes: raw and detail. Raw prints only stdout/stderr and is the default for log-reading; detail includes metadata plus stdout/stderr.
+- `--json` is only a format switch for the selected shape: `--raw --json` returns `{stdout,stderr}`, while `--detail --json` returns the full envelope.
 - Every `run` appends a masked JSONL event to `execution.log` (default `~/.server-md/ops.jsonl`).
 - `risk=medium/high` or `confirm=true` requires `challenge`; the user must provide the confirmation code.
 - Without explicit authorization, render commands instead of executing remote operations.
