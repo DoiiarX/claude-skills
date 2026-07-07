@@ -1,44 +1,92 @@
 ---
 name: server-md
 description: >
-  Manage a private server inventory through a compact server-md.json sidecar. Use when the user mentions SERVER.md, server inventory, self-managed servers, host aliases, operational shortcuts, or asks where the canonical server notes live. Prefer one CLI query and stop; do not read Markdown notes for facts.
+  管理个人 SERVER.md 运维知识库。Use this skill whenever the user mentions ~/SERVER.md, SERVER.md, 服务器清单, server inventory, tailnet nodes, self-managed servers, WSL/Windows/Ubuntu host notes, or asks Claude to create, locate, update, summarize, or use a personal server runbook. It helps Claude find the canonical SERVER.md across WSL, Windows, native Ubuntu, and remote hosts; preserve progressive disclosure by splitting details into reference files; summarize local machine and managed servers without leaking secrets; and turn server notes into safe operational checklists.
 allowed-tools: Bash
 ---
 
-# server-md
+# SERVER.md 运维知识库 Skill
 
-`server-md.json` is the machine-readable source of truth. Markdown notes are only short human pointers.
+这个 skill 用来维护个人服务器清单与运维手册。核心标准是机器可读的 `server-md.json` sidecar；Markdown 只做简短人类入口，建议保持 200 行以内。普通查询不要打开 references；只有维护 skill / CLI / schema / eval 时才读对应参考。
 
-## Normal task rule
+## 必须使用 `server-md` CLI（sidecar 是唯一事实源）
 
-Use the bundled CLI. Do not open Markdown notes or parse JSON by hand.
+`server-md.json` 是核心标准和唯一结构化事实源。Markdown 只允许作为占位符和简短说明；事实查询只走 CLI。
+
+禁止为了常见查询再调用 Markdown 读取或分段流程；如果 CLI 返回了足够信息，立即停止，不要二次验证。
+
+### 一跳查询规则
 
 ```bash
+# 判断主副本：只跑这一条，然后结束
 ~/.claude/skills/server-md/server-md locate --json
-~/.claude/skills/server-md/server-md server brief --name <server-or-alias> --tag <topic> --json
-~/.claude/skills/server-md/server-md resource list --server <server-or-alias> --tag <topic> --json
-~/.claude/skills/server-md/server-md shortcut list --server <server-or-alias> --tag <topic> --json
+
+# 查询某服务器、相关资源和快捷命令：优先一条 brief
+~/.claude/skills/server-md/server-md server brief --name prod --tag web --json
+
+# 只查资源
+~/.claude/skills/server-md/server-md resource list --server prod --tag web --json
+
+# 只查快捷命令
+~/.claude/skills/server-md/server-md shortcut list --server prod --tag web --json
 ```
 
-Stop when the CLI output answers the question. Do not run extra verification reads.
+### 允许的常用命令
 
-## Command map
+- `locate --json`：返回 compact 主副本/sidecar 定位；默认不要 `--verbose`。
+- `server list|resolve|connect|brief`：服务器查询；`connect` 只渲染 SSH 命令，不执行。
+- `resource list|show|add`：资源查询/注册，支持 `warnings`、`tips`、`constraints`。
+- `shortcut list|show|add|run`：快捷命令查询/渲染，支持 `--server`、`--tag`、warnings/tips/constraints。
+- `redact-check`：发布前脱敏扫描。
+- `inventory *`：结构化 inventory 维护。
 
-| User intent | Command |
-|---|---|
-| Which file is canonical? | `server-md locate --json` |
-| What is known about a server/topic? | `server-md server brief --name <alias> --tag <topic> --json` |
-| Show resources only | `server-md resource list --server <alias> --tag <topic> --json` |
-| Show shortcuts only | `server-md shortcut list --server <alias> --tag <topic> --json` |
-| Register data | `server register`, `resource add`, `shortcut add` |
-| Check before publishing | `server-md redact-check <paths...> --json` |
+只有在新增 CLI 功能、修 CLI bug、或用户明确要求看人类说明时，才打开 `SERVER.md`。
 
-## Safety
+## 核心原则
 
-- Never print secrets, private keys, passwords, full bearer strings, node keys, or environment-file contents.
-- Destructive or production-affecting operations require a plan and explicit user confirmation.
-- Registered shortcuts default to render-only. Treat high-risk shortcuts as instructions to discuss, not execute.
+1. **JSON 优先，Markdown 退场**
+   - `server-md.json` 决定主副本、服务器、资源、快捷命令、warnings、tips、constraints。
+   - `SERVER.md` 不保存长命令和细节；事实查询只走 CLI。
 
-## Maintainer-only references
+2. **一跳够用就停止**
+   - 主副本判断 = `locate --json`。
+   - 服务器上下文 = `server brief --name <name> [--tag <tag>] --json`。
+   - 不要为了“确认一下”再读 Markdown。
 
-No reference files are required for normal use. If you are editing this skill or extending the CLI, read the CLI source directly.
+3. **敏感信息默认不输出**
+   - 不要输出 token、密码、私钥、SMTP 授权码、完整 Bearer token、完整 cloudflared token、兑换码私钥等。
+   - 命令示例使用环境变量占位。
+
+4. **危险操作先确认**
+   - 涉及公网、DNS、生产服务、数据、账号状态、删除、重启、token 轮换时，先给计划和影响，不直接执行。
+
+## 推荐文件结构
+
+```text
+server-md/
+├── SKILL.md
+├── server-md
+├── references/
+│   ├── cli-design.md
+│   ├── schema.md
+│   ├── sidecar-config.md
+│   ├── shortcut-execution.md
+│   └── security-redaction.md
+└── evals/
+    └── evals.json
+```
+
+## 输出风格
+
+- 用简短表格先给结论，再给命令。
+- 明确标注“我读取的是主副本 / 引导文件 / 远程运维卡片”。
+- 当信息可能过期时，给出验证命令，而不是假设仍正确。
+- 如命令涉及重启、删除、DNS、Cloudflare、生产数据库、兑换码作废、token 轮换，先给计划，不要直接执行。
+
+## 相关参考
+
+普通查询不要打开 references。只有在维护 skill / CLI / schema / eval 时才读对应文件：
+
+- `references/sidecar-config.md` — sidecar schema 维护。
+- `references/operations-workflow.md` — 安全规则维护。
+- `references/security-redaction.md` — 脱敏规则维护。

@@ -1,29 +1,36 @@
 #!/usr/bin/env python3
-"""Agent-friendly CLI for compact private server inventories."""
+"""Agent-friendly CLI for locating and maintaining personal SERVER.md files."""
+
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
+import hashlib
 import json
 import os
 import platform
 import re
 import secrets
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
-REVEAL = False
+REVEAL_SECRETS = False
+
+
+SECRET_PATTERNS = [
+    re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{20,}", re.I),
+    re.compile(r"(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CLIENT_SECRET|API_KEY|AUTHORIZATION|ADMIN_TOKEN|API_TOKEN)\s*=\s*[^\s#]+", re.I),
+    re.compile(r"nodekey:[A-Za-z0-9._~+/=-]+", re.I),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+]
+
 SENSITIVE_KEY_PARTS = [
     "token", "secret", "password", "privatekey", "private_key", "clientsecret",
     "client_secret", "apikey", "api_key", "authorization", "auth", "nodekey",
 ]
-SECRET_PATTERNS = [
-    re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{20,}", re.I),
-    re.compile(r"((?:TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CLIENT_SECRET|API_KEY|AUTHORIZATION|ADMIN_TOKEN|API_TOKEN)\s*=\s*)([^\s#]+)", re.I),
-    re.compile(r"nodekey:([A-Za-z0-9._~+/=-]+)", re.I),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-]
-
 
 def is_sensitive_key(key: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]", "", key.lower())
@@ -31,24 +38,35 @@ def is_sensitive_key(key: str) -> bool:
 
 
 def mask_scalar(value: str) -> str:
-    if REVEAL:
-        return value
     if len(value) <= 8:
         return "***"
     return f"{value[:4]}***{value[-4:]}"
 
 
-def mask_text(text: str) -> str:
-    if REVEAL:
-        return text
-    text = re.sub(r"Bearer\s+([A-Za-z0-9._~+/=-]{20,})", lambda m: "Bearer " + mask_scalar(m.group(1)), text, flags=re.I)
-    text = re.sub(r"((?:TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CLIENT_SECRET|API_KEY|AUTHORIZATION|ADMIN_TOKEN|API_TOKEN)\s*=\s*)([^\s#]+)", lambda m: m.group(1) + mask_scalar(m.group(2)), text, flags=re.I)
-    text = re.sub(r"nodekey:([A-Za-z0-9._~+/=-]+)", lambda m: "nodekey:" + mask_scalar(m.group(1)), text, flags=re.I)
+def mask_secret_text(text: str) -> str:
+    text = re.sub(
+        r"Bearer\s+([A-Za-z0-9._~+/=-]{20,})",
+        lambda m: "Bearer " + mask_scalar(m.group(1)),
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"((?:TOKEN|SECRET|PASSWORD|PRIVATE_KEY|CLIENT_SECRET|API_KEY|AUTHORIZATION|ADMIN_TOKEN|API_TOKEN)\s*=\s*)([^\s#]+)",
+        lambda m: m.group(1) + mask_scalar(m.group(2)),
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"nodekey:([A-Za-z0-9._~+/=-]+)",
+        lambda m: "nodekey:" + mask_scalar(m.group(1)),
+        text,
+        flags=re.I,
+    )
     return text
 
 
-def mask_data(data: Any) -> Any:
-    if REVEAL:
+def mask_data(data: Any, parent_key: str = "") -> Any:
+    if REVEAL_SECRETS:
         return data
     if isinstance(data, dict):
         out = {}
@@ -56,12 +74,12 @@ def mask_data(data: Any) -> Any:
             if is_sensitive_key(str(key)) and isinstance(value, str):
                 out[key] = mask_scalar(value) + " (masked; pass --reveal before the subcommand to show)"
             else:
-                out[key] = mask_data(value)
+                out[key] = mask_data(value, str(key))
         return out
     if isinstance(data, list):
-        return [mask_data(item) for item in data]
+        return [mask_data(item, parent_key) for item in data]
     if isinstance(data, str):
-        return mask_text(data)
+        return mask_secret_text(data)
     return data
 
 
@@ -69,361 +87,1145 @@ def emit(data: Any, as_json: bool) -> None:
     data = mask_data(data)
     if as_json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
-    elif isinstance(data, dict):
-        for key, value in data.items():
-            print(f"{key}={json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value}")
+        return
+    if isinstance(data, str):
+        print(data)
     elif isinstance(data, list):
         for item in data:
-            print(json.dumps(item, ensure_ascii=False) if isinstance(item, (dict, list)) else item)
-    else:
-        print(data)
+            if isinstance(item, dict):
+                print("\t".join(f"{k}={v}" for k, v in item.items()))
+            else:
+                print(item)
+    elif isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(v, (dict, list)):
+                print(f"{k}={json.dumps(v, ensure_ascii=False)}")
+            else:
+                print(f"{k}={v}")
 
 
 def is_wsl() -> bool:
     try:
-        return "microsoft" in Path("/proc/version").read_text(errors="ignore").lower()
+        text = Path("/proc/version").read_text(encoding="utf-8", errors="ignore").lower()
     except OSError:
-        return False
+        text = ""
+    return "microsoft" in text or "wsl" in text
 
 
-def env_info() -> dict[str, Any]:
+def detect_env() -> dict[str, Any]:
     system = platform.system()
+    home = str(Path.home())
+    env_type = "linux"
     if system == "Windows":
-        kind = "windows"
+        env_type = "windows"
     elif is_wsl():
-        kind = "wsl"
-    else:
-        kind = "linux"
-    return {"environment": kind, "system": system, "home": str(Path.home()), "cwd": str(Path.cwd()), "is_wsl": is_wsl()}
-
-
-def sidecar_path(markdown: Path) -> Path:
-    return markdown.with_name("server-md.json")
-
-
-def candidate_markdown_paths() -> list[Path]:
-    home = Path.home()
-    paths = [home / "SERVER.md"]
-    if is_wsl():
-        paths.extend(Path("/mnt/c/Users").glob("*/SERVER.md"))
-    return list(dict.fromkeys(p.expanduser() for p in paths))
-
-
-def load_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return {"_error": str(exc), "path": str(path)}
-    return data if isinstance(data, dict) else {"_error": "root must be object", "path": str(path)}
-
-
-def default_sidecar() -> dict[str, Any]:
+        env_type = "wsl"
+    elif os.geteuid() == 0 if hasattr(os, "geteuid") else False:
+        env_type = "linux-root-or-server"
     return {
-        "version": 1,
-        "role": "canonical",
-        "priority": 100,
-        "markdown": "SERVER.md",
-        "servers": {},
-        "resources": {},
-        "shortcuts": {},
-        "execution": {"default_mode": "render", "log": "~/.server-md/ops.jsonl", "confirm_salt": secrets.token_hex(16)},
+        "environment": env_type,
+        "system": system,
+        "release": platform.release(),
+        "home": home,
+        "cwd": str(Path.cwd()),
+        "is_wsl": is_wsl(),
     }
 
 
-def resolve_sidecar(raw: str | None = None) -> Path:
+def sidecar_path_for(server_md: Path) -> Path:
+    return server_md.with_name("server-md.json")
+
+
+def load_sidecar_for(server_md: Path) -> dict[str, Any] | None:
+    sidecar = sidecar_path_for(server_md)
+    if not sidecar.exists():
+        return None
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return {"_error": f"invalid json: {exc}", "path": str(sidecar)}
+    if isinstance(data, dict):
+        data.setdefault("path", str(sidecar))
+        return data
+    return {"_error": "sidecar root must be an object", "path": str(sidecar)}
+
+
+def resolve_sidecar_path(raw: str | None = None) -> Path:
     if raw:
         return Path(raw).expanduser()
-    located = locate_candidate()
-    if located and located.get("sidecar"):
-        return Path(str(located["sidecar"])).expanduser()
-    return sidecar_path(Path.home() / "SERVER.md")
+    candidates = [classify_file(p) for p in candidate_paths()]
+    canonical = choose_canonical(candidates)
+    if canonical:
+        sidecar = canonical.get("sidecar_path")
+        if sidecar:
+            return Path(str(sidecar)).expanduser()
+    return sidecar_path_for(Path.home() / "SERVER.md")
 
 
-def read_sidecar(path: Path) -> dict[str, Any]:
-    data = load_json(path) if path.exists() else None
-    if data is None:
-        data = default_sidecar()
+def load_sidecar_path(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {
+            "version": 1,
+            "role": "canonical",
+            "priority": 100,
+            "markdown": "SERVER.md",
+            "inventory": "~/.server-md/inventory.json",
+            "servers": {},
+            "resources": {},
+            "shortcuts": {},
+            "execution": {"default_mode": "render", "log": "~/.server-md/ops.jsonl", "confirm_salt": secrets.token_hex(16)},
+        }
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise SystemExit(f"Invalid sidecar: root must be an object: {path}")
     data.setdefault("servers", {})
     data.setdefault("resources", {})
     data.setdefault("shortcuts", {})
-    data.setdefault("execution", {"default_mode": "render", "log": "~/.server-md/ops.jsonl"})
+    ensure_execution_config(data)
     return data
 
 
-def write_sidecar(path: Path, data: dict[str, Any], dry_run: bool) -> None:
+def save_sidecar_path(path: Path, data: dict[str, Any], dry_run: bool) -> None:
     if dry_run:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def locate_candidate() -> dict[str, Any] | None:
-    rows = []
-    for md in candidate_markdown_paths():
-        sc = sidecar_path(md)
-        data = load_json(sc)
-        if data:
-            rows.append({"canonical_markdown": str(md), "sidecar": str(sc), "role": data.get("role"), "priority": int(data.get("priority", 0) or 0), "environment_hint": data.get("environment_hint")})
-    if not rows:
-        md = Path.home() / "SERVER.md"
-        return {"canonical_markdown": str(md), "sidecar": str(sidecar_path(md)), "role": None, "priority": None, "environment_hint": None}
-    return sorted(rows, key=lambda r: r.get("priority") or 0, reverse=True)[0]
+def ensure_execution_config(data: dict[str, Any]) -> dict[str, Any]:
+    execution = data.setdefault("execution", {})
+    if not isinstance(execution, dict):
+        execution = {}
+        data["execution"] = execution
+    execution.setdefault("default_mode", "render")
+    execution.setdefault("log", "~/.server-md/ops.jsonl")
+    execution.setdefault("confirm_salt", secrets.token_hex(16))
+    return execution
 
 
-def cmd_locate(args: argparse.Namespace) -> None:
-    row = locate_candidate()
-    row["reason"] = "sidecar priority" if row.get("role") else "default path"
-    row["note"] = "Query sidecar data through server-md CLI; Markdown notes are informational."
-    emit(row, args.json)
+def append_jsonl(path_raw: str, event: dict[str, Any]) -> None:
+    path = Path(path_raw).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    event = {"ts": _dt.datetime.now(_dt.timezone.utc).isoformat(), **event}
+    path.open("a", encoding="utf-8").write(json.dumps(mask_data(event), ensure_ascii=False) + "\n")
 
 
-def matches_tags(row: dict[str, Any], tags: list[str] | None) -> bool:
-    if not tags:
-        return True
-    return bool(set(tags) & set(row.get("tags", [])))
+def shortcut_requires_confirmation(spec: dict[str, Any]) -> bool:
+    return bool(spec.get("confirm")) or str(spec.get("risk", "read-only")) in {"medium", "high"}
 
 
-def matches_filter(row: dict[str, Any], query: str | None) -> bool:
-    if not query:
-        return True
-    return query.lower() in json.dumps(row, ensure_ascii=False).lower()
+def confirmation_code_for_step(salt: str, category: str, name: str, command: str, step: int) -> str:
+    payload = f"{salt}|{step}|{category}|{name}|{command}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:10]
 
 
-def paginate(items: list[Any], page: int, page_size: int) -> dict[str, Any]:
-    if page_size <= 0:
-        return {"items": items, "page": 1, "page_size": 0, "total": len(items), "has_next": False, "next_page": None}
-    page = max(1, page)
-    start = (page - 1) * page_size
-    end = start + page_size
-    return {"items": items[start:end], "page": page, "page_size": page_size, "total": len(items), "has_next": end < len(items), "next_page": page + 1 if end < len(items) else None}
+def current_totp_step(period: int = 30) -> int:
+    return int(time.time() // period)
 
 
-def server_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
-    return [{"name": name, **spec} for name, spec in data.get("servers", {}).items() if isinstance(spec, dict)]
+def confirmation_code(salt: str, category: str, name: str, command: str, period: int = 30) -> str:
+    # TOTP-style short window. Default TOTP period is 30 seconds; this avoids static/date-long bypass codes.
+    return confirmation_code_for_step(salt, category, name, command, current_totp_step(period))
 
 
-def resource_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
-    return [{"name": name, **spec} for name, spec in data.get("resources", {}).items() if isinstance(spec, dict)]
+def valid_confirmation_codes(salt: str, category: str, name: str, command: str, period: int = 30, skew: int = 1) -> set[str]:
+    step = current_totp_step(period)
+    return {confirmation_code_for_step(salt, category, name, command, step - offset) for offset in range(skew + 1)}
 
 
-def shortcut_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = []
-    for category, entries in data.get("shortcuts", {}).items():
-        if isinstance(entries, dict):
-            rows.extend({"category": category, "name": name, **spec} for name, spec in entries.items() if isinstance(spec, dict))
+def command_hash(command: str) -> str:
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()[:16]
+
+
+def flatten_shortcuts(data: dict[str, Any]) -> list[dict[str, Any]]:
+    shortcuts = data.get("shortcuts", {})
+    if not isinstance(shortcuts, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for category, entries in shortcuts.items():
+        if not isinstance(entries, dict):
+            continue
+        for name, spec in entries.items():
+            if isinstance(spec, dict):
+                rows.append({"category": category, "name": name, **spec})
     return rows
 
 
-def find_server(data: dict[str, Any], name: str) -> tuple[str | None, dict[str, Any] | None]:
-    for server_name, spec in data.get("servers", {}).items():
-        if server_name == name or name in spec.get("aliases", []):
-            return server_name, spec
+def flatten_servers(data: dict[str, Any]) -> list[dict[str, Any]]:
+    servers = data.get("servers", {})
+    if not isinstance(servers, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for name, spec in servers.items():
+        if isinstance(spec, dict):
+            rows.append({"name": name, **spec})
+    return rows
+
+
+def flatten_resources(data: dict[str, Any]) -> list[dict[str, Any]]:
+    resources = data.get("resources", {})
+    if not isinstance(resources, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for name, spec in resources.items():
+        if isinstance(spec, dict):
+            rows.append({"name": name, **spec})
+    return rows
+
+
+def find_server(data: dict[str, Any], name_or_alias: str) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+    servers = data.get("servers", {})
+    if not isinstance(servers, dict):
+        return None, None
+    if name_or_alias in servers and isinstance(servers[name_or_alias], dict):
+        return name_or_alias, servers[name_or_alias]
+    for name, spec in servers.items():
+        if not isinstance(spec, dict):
+            continue
+        aliases = spec.get("aliases", [])
+        if isinstance(aliases, list) and name_or_alias in aliases:
+            return name, spec
     return None, None
 
 
-def cmd_server_list(args: argparse.Namespace) -> None:
-    path = resolve_sidecar(args.sidecar)
-    rows = [r for r in server_rows(read_sidecar(path)) if matches_tags(r, args.tag) and matches_filter(r, args.filter)]
-    emit({"sidecar": str(path), "results": paginate(rows, args.page, args.page_size)}, args.json)
-
-
-def cmd_server_register(args: argparse.Namespace) -> None:
-    path = resolve_sidecar(args.sidecar)
-    data = read_sidecar(path)
-    current = data.setdefault("servers", {}).get(args.name, {}) if args.force else {}
-    if args.name in data.get("servers", {}) and not args.force:
-        raise SystemExit("Server exists; pass --force to update.")
-    for key in ["role", "user", "public_host", "public_ip", "tailnet_ip", "magic_dns", "identity", "notes_file", "risk"]:
-        value = getattr(args, key)
-        if value is not None:
-            current[key] = value
-    for key, attr in [("aliases", "alias"), ("tags", "tag"), ("warnings", "warning"), ("tips", "tip"), ("constraints", "constraint")]:
-        values = getattr(args, attr) or []
-        if values:
-            current[key] = sorted(set(current.get(key, []) + values))
-    data["servers"][args.name] = current
-    write_sidecar(path, data, args.dry_run)
-    emit({"sidecar": str(path), "dry_run": args.dry_run, "server": {"name": args.name, **current}}, args.json)
-
-
-def cmd_server_resolve(args: argparse.Namespace) -> None:
-    path = resolve_sidecar(args.sidecar)
-    name, spec = find_server(read_sidecar(path), args.name)
-    if not spec:
-        raise SystemExit("Server not found.")
-    emit({"sidecar": str(path), "name": name, "server": spec}, args.json)
-
-
-def cmd_server_connect(args: argparse.Namespace) -> None:
-    path = resolve_sidecar(args.sidecar)
-    name, spec = find_server(read_sidecar(path), args.name)
-    if not spec:
-        raise SystemExit("Server not found.")
-    host = spec.get("magic_dns") or spec.get("tailnet_ip") or spec.get("public_host") or spec.get("public_ip") or name
+def render_ssh_command(spec: dict[str, Any], prefer: str = "auto") -> str:
     user = spec.get("user") or "root"
-    identity = f" -i {spec['identity']}" if spec.get("identity") else ""
-    emit({"sidecar": str(path), "name": name, "command": f"ssh{identity} {user}@{host}", "execute": False}, args.json)
+    target_host = None
+    if prefer == "tailnet":
+        target_host = spec.get("tailnet_ip") or spec.get("magic_dns")
+    elif prefer == "public":
+        target_host = spec.get("public_ip") or spec.get("public_host")
+    else:
+        target_host = spec.get("magic_dns") or spec.get("tailnet_ip") or spec.get("public_ip") or spec.get("public_host")
+    if not target_host:
+        raise SystemExit("Server has no usable host field; set magic_dns, tailnet_ip, public_ip, or public_host.")
+    parts = ["ssh"]
+    if spec.get("port"):
+        parts += ["-p", str(spec["port"])]
+    if spec.get("identity"):
+        parts += ["-i", str(spec["identity"])]
+    if spec.get("proxy_command"):
+        parts += ["-o", f"ProxyCommand={spec['proxy_command']}"]
+    if spec.get("ssh_extra") and isinstance(spec["ssh_extra"], list):
+        parts += [str(x) for x in spec["ssh_extra"]]
+    parts.append(f"{user}@{target_host}")
+    return " ".join(parts)
 
 
-def cmd_server_brief(args: argparse.Namespace) -> None:
-    path = resolve_sidecar(args.sidecar)
-    data = read_sidecar(path)
-    name, spec = find_server(data, args.name)
-    if not spec:
-        raise SystemExit("Server not found.")
-    aliases = {args.name, name}
-    resources = [r for r in resource_rows(data) if r.get("server") in aliases and matches_tags(r, args.tag) and matches_filter(r, args.filter)]
-    shortcuts = [r for r in shortcut_rows(data) if r.get("host") in aliases and matches_tags(r, args.tag) and matches_filter(r, args.filter)]
-    emit({"sidecar": str(path), "name": name, "server": spec, "resources": paginate(resources, args.page, args.page_size), "shortcuts": paginate(shortcuts, args.page, args.page_size)}, args.json)
+def sidecar_priority(data: dict[str, Any] | None, role: str) -> int:
+    if not data or data.get("_error"):
+        return 0
+    if "priority" in data:
+        try:
+            return int(data["priority"])
+        except (TypeError, ValueError):
+            return 0
+    declared_role = str(data.get("role", "")).lower()
+    if declared_role in {"canonical", "main", "primary"}:
+        return 100
+    if declared_role in {"pointer", "guide"}:
+        return 10
+    if declared_role in {"machine-runbook", "node"}:
+        return 30
+    return 50 if role == "canonical-candidate" else 0
 
 
-def cmd_resource_list(args: argparse.Namespace) -> None:
-    path = resolve_sidecar(args.sidecar)
-    rows = resource_rows(read_sidecar(path))
-    if args.server:
-        rows = [r for r in rows if r.get("server") == args.server]
-    rows = [r for r in rows if matches_tags(r, args.tag) and matches_filter(r, args.filter)]
-    emit({"sidecar": str(path), "results": paginate(rows, args.page, args.page_size)}, args.json)
+def candidate_paths() -> list[Path]:
+    paths: list[Path] = []
+    home = Path.home()
+    paths.append(home / "SERVER.md")
+    if is_wsl():
+        users = Path("/mnt/c/Users")
+        if users.exists():
+            paths.extend(sorted(users.glob("*/SERVER.md")))
+    userprofile = os.environ.get("USERPROFILE")
+    if userprofile:
+        paths.append(Path(userprofile) / "SERVER.md")
+    # Preserve order while removing duplicates.
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in paths:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
 
 
-def cmd_resource_add(args: argparse.Namespace) -> None:
-    path = resolve_sidecar(args.sidecar)
-    data = read_sidecar(path)
-    if args.name in data.get("resources", {}) and not args.force:
-        raise SystemExit("Resource exists; pass --force to update.")
-    row = {k: v for k, v in {"server": args.server, "kind": args.kind, "path": args.path, "url": args.url, "description": args.description, "risk": args.risk, "notes_file": args.notes_file}.items() if v is not None}
-    for key, attr in [("tags", "tag"), ("warnings", "warning"), ("tips", "tip"), ("constraints", "constraint")]:
-        values = getattr(args, attr) or []
-        if values:
-            row[key] = sorted(set(values))
-    data.setdefault("resources", {})[args.name] = row
-    write_sidecar(path, data, args.dry_run)
-    emit({"sidecar": str(path), "dry_run": args.dry_run, "resource": {"name": args.name, **row}}, args.json)
+def classify_file(path: Path) -> dict[str, Any]:
+    exists = path.exists()
+    role = "missing"
+    evidence: list[str] = []
+    sidecar = None
+    if exists:
+        text = path.read_text(encoding="utf-8", errors="ignore")[:3000]
+        lowered = text.lower()
+        if "主副本" in text or "canonical" in lowered:
+            role = "canonical-candidate"
+            evidence.append("mentions canonical/main copy")
+        elif "引导" in text or "指回" in text or "wsl.localhost" in lowered:
+            role = "pointer-file"
+            evidence.append("looks like a pointer to another file")
+        elif "/root/server.md" in lowered or "运维卡片" in text:
+            role = "machine-runbook"
+            evidence.append("looks like a per-machine runbook")
+        else:
+            role = "server-md-candidate"
+        sidecar = load_sidecar_for(path)
+        if sidecar:
+            if sidecar.get("_error"):
+                evidence.append(f"sidecar error: {sidecar['_error']}")
+            else:
+                evidence.append("has server-md.json sidecar")
+                if sidecar.get("role"):
+                    role = str(sidecar["role"])
+    priority = sidecar_priority(sidecar, role)
+    return {
+        "path": str(path),
+        "exists": exists,
+        "role": role,
+        "priority": priority,
+        "sidecar_path": str(sidecar_path_for(path)),
+        "sidecar": sidecar,
+        "evidence": evidence,
+    }
 
 
-def cmd_shortcut_list(args: argparse.Namespace) -> None:
-    path = resolve_sidecar(args.sidecar)
-    rows = shortcut_rows(read_sidecar(path))
-    if args.server:
-        rows = [r for r in rows if r.get("host") == args.server]
-    if args.category:
-        rows = [r for r in rows if r.get("category") == args.category]
-    rows = [r for r in rows if matches_tags(r, args.tag) and matches_filter(r, args.filter)]
-    emit({"sidecar": str(path), "results": paginate(rows, args.page, args.page_size)}, args.json)
+def choose_canonical(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    existing = [c for c in candidates if c.get("exists")]
+    if not existing:
+        return None
+    return sorted(existing, key=lambda c: (int(c.get("priority") or 0), c.get("role") == "canonical-candidate"), reverse=True)[0]
 
 
-def cmd_shortcut_add(args: argparse.Namespace) -> None:
-    path = resolve_sidecar(args.sidecar)
-    data = read_sidecar(path)
-    category = data.setdefault("shortcuts", {}).setdefault(args.category, {})
-    if args.name in category and not args.force:
-        raise SystemExit("Shortcut exists; pass --force to update.")
-    row = {"command": args.command, "host": args.host, "description": args.description, "risk": args.risk, "execute_mode": args.execute_mode, "confirm": args.confirm}
-    row = {k: v for k, v in row.items() if v not in (None, False)}
-    for key, attr in [("tags", "tag"), ("warnings", "warning"), ("tips", "tip"), ("constraints", "constraint")]:
-        values = getattr(args, attr) or []
-        if values:
-            row[key] = sorted(set(values))
-    category[args.name] = row
-    write_sidecar(path, data, args.dry_run)
-    emit({"sidecar": str(path), "dry_run": args.dry_run, "category": args.category, "name": args.name, "shortcut": row}, args.json)
+def cmd_locate(args: argparse.Namespace) -> None:
+    candidates = [classify_file(p) for p in candidate_paths()]
+    canonical = choose_canonical(candidates)
+    if args.verbose:
+        data = {
+            "environment": detect_env(),
+            "canonical": canonical,
+            "candidates": candidates,
+            "notes": [
+                "server-md.json sidecar priority is authoritative",
+                "SERVER.md is informational only; query CLI for facts",
+            ],
+        }
+    else:
+        sidecar = canonical.get("sidecar") if canonical else None
+        data = {
+            "canonical_markdown": canonical.get("path") if canonical else None,
+            "sidecar": canonical.get("sidecar_path") if canonical else None,
+            "role": canonical.get("role") if canonical else None,
+            "priority": canonical.get("priority") if canonical else None,
+            "environment_hint": sidecar.get("environment_hint") if isinstance(sidecar, dict) else None,
+            "reason": "sidecar priority" if isinstance(sidecar, dict) else "no sidecar found",
+            "note": "Use server-md CLI commands to query sidecar data; do not read SERVER.md for facts.",
+        }
+    emit(data, args.json)
 
 
-def cmd_redact(args: argparse.Namespace) -> None:
+def paginate_items(items: list[Any], page: int, page_size: int) -> dict[str, Any]:
+    if page_size <= 0:
+        return {"items": items, "page": 1, "page_size": 0, "total": len(items), "has_next": False, "next_page": None}
+    page = max(page, 1)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return {
+        "items": items[start:end],
+        "page": page,
+        "page_size": page_size,
+        "total": len(items),
+        "has_next": end < len(items),
+        "next_page": page + 1 if end < len(items) else None,
+    }
+
+
+def filter_items(items: list[dict[str, Any]], query: str | None) -> list[dict[str, Any]]:
+    if not query:
+        return items
+    q = query.lower()
+    return [item for item in items if q in json.dumps(item, ensure_ascii=False).lower()]
+
+
+def cmd_redact_check(args: argparse.Namespace) -> None:
     findings = []
+    changed_files: list[str] = []
     for raw in args.paths:
         path = Path(raw).expanduser()
-        files = [path] if path.is_file() else [p for p in path.rglob("*") if p.is_file() and ".git" not in p.parts]
+        if path.is_dir():
+            files = [
+                p for p in path.rglob("*")
+                if p.is_file() and ".git" not in p.parts
+            ]
+        else:
+            files = [path]
         for file in files:
             try:
                 text = file.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
+            masked_text = mask_secret_text(text)
             for lineno, line in enumerate(text.splitlines(), 1):
                 for pat in SECRET_PATTERNS:
                     if pat.search(line):
-                        findings.append({"file": str(file), "line": lineno, "preview": mask_text(line).strip()})
+                        findings.append({"file": str(file), "line": lineno, "pattern": pat.pattern, "preview": mask_secret_text(line).strip()})
                         break
-            if args.fix:
-                file.write_text(mask_text(text), encoding="utf-8")
-    emit({"ok": not findings, "findings": findings}, args.json)
+            if args.fix and masked_text != text:
+                file.write_text(masked_text, encoding="utf-8")
+                changed_files.append(str(file))
+    data = {"ok": not findings, "findings": findings, "fixed_files": changed_files}
+    emit(data, args.json)
+    if findings and not args.fix:
+        sys.exit(1)
+
+
+def inventory_path(raw: str | None) -> Path:
+    return Path(raw or "~/.server-md/inventory.json").expanduser()
+
+
+def load_inventory(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"version": 1, "hosts": {}, "services": {}, "links": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_inventory(path: Path, data: dict[str, Any], dry_run: bool) -> None:
+    if dry_run:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def cmd_inventory_init(args: argparse.Namespace) -> None:
+    path = inventory_path(args.inventory)
+    if path.exists() and not args.force:
+        raise SystemExit(f"Refusing to overwrite existing inventory: {path}. Use --force or --dry-run.")
+    data = {"version": 1, "hosts": {}, "services": {}, "links": []}
+    save_inventory(path, data, args.dry_run)
+    emit({"path": str(path), "dry_run": args.dry_run, "inventory": data}, args.json)
+
+
+def cmd_inventory_list(args: argparse.Namespace) -> None:
+    path = inventory_path(args.inventory)
+    data = load_inventory(path)
+    if args.kind == "hosts":
+        result = [{"name": name, **value} for name, value in data.get("hosts", {}).items()]
+    elif args.kind == "services":
+        result = [{"name": name, **value} for name, value in data.get("services", {}).items()]
+    else:
+        result = [{"kind": "host", "name": name, **value} for name, value in data.get("hosts", {}).items()]
+        result += [{"kind": "service", "name": name, **value} for name, value in data.get("services", {}).items()]
+    result = filter_items(result, args.filter)
+    if args.tag:
+        wanted = set(args.tag)
+        result = [item for item in result if (wanted & set(item.get("tags", [])))]
+    if args.host:
+        result = [item for item in result if item.get("host") == args.host or item.get("name") == args.host]
+    emit({"inventory": str(path), "kind": args.kind, "results": paginate_items(result, args.page, args.page_size)}, args.json)
+
+
+def cmd_host_set(args: argparse.Namespace) -> None:
+    path = inventory_path(args.inventory)
+    data = load_inventory(path)
+    hosts = data.setdefault("hosts", {})
+    current = hosts.setdefault(args.name, {})
+    fields = {
+        "role": args.role,
+        "os": args.os,
+        "user": args.user,
+        "public_ip": args.public_ip,
+        "tailnet_ip": args.tailnet_ip,
+        "magic_dns": args.magic_dns,
+        "ssh": args.ssh,
+        "risk": args.risk,
+        "notes_file": args.notes_file,
+    }
+    for key, value in fields.items():
+        if value is not None:
+            current[key] = value
+    if args.tag:
+        current["tags"] = sorted(set(current.get("tags", []) + args.tag))
+    save_inventory(path, data, args.dry_run)
+    emit({"path": str(path), "dry_run": args.dry_run, "host": {"name": args.name, **current}}, args.json)
+
+
+def cmd_service_set(args: argparse.Namespace) -> None:
+    path = inventory_path(args.inventory)
+    data = load_inventory(path)
+    services = data.setdefault("services", {})
+    current = services.setdefault(args.name, {})
+    fields = {
+        "host": args.host,
+        "kind": args.kind,
+        "public_url": args.public_url,
+        "local_url": args.local_url,
+        "unit": args.unit,
+        "config_path": args.config_path,
+        "data_path": args.data_path,
+        "healthcheck": args.healthcheck,
+        "risk": args.risk,
+        "notes_file": args.notes_file,
+    }
+    for key, value in fields.items():
+        if value is not None:
+            current[key] = value
+    if args.tag:
+        current["tags"] = sorted(set(current.get("tags", []) + args.tag))
+    save_inventory(path, data, args.dry_run)
+    emit({"path": str(path), "dry_run": args.dry_run, "service": {"name": args.name, **current}}, args.json)
+
+
+def cmd_inventory_validate(args: argparse.Namespace) -> None:
+    path = inventory_path(args.inventory)
+    data = load_inventory(path)
+    errors = []
+    if not isinstance(data.get("hosts", {}), dict):
+        errors.append("hosts must be an object")
+    if not isinstance(data.get("services", {}), dict):
+        errors.append("services must be an object")
+    hosts = data.get("hosts", {}) if isinstance(data.get("hosts", {}), dict) else {}
+    for name, svc in (data.get("services", {}) or {}).items():
+        host = svc.get("host") if isinstance(svc, dict) else None
+        if host and host not in hosts:
+            errors.append(f"service {name!r} references unknown host {host!r}")
+    result = {"ok": not errors, "path": str(path), "errors": errors}
+    emit(result, args.json)
+    if errors:
+        sys.exit(1)
+def cmd_server_brief(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    name, spec = find_server(data, args.name)
+    if not spec:
+        raise SystemExit(f"Server not found: {args.name}. Try: server-md server list --filter {args.name} --json")
+    resources = flatten_resources(data)
+    shortcuts = flatten_shortcuts(data)
+    if args.tag:
+        wanted = set(args.tag)
+        resources = [r for r in resources if (wanted & set(r.get("tags", [])))]
+        shortcuts = [r for r in shortcuts if (wanted & set(r.get("tags", [])))]
+    resources = [r for r in resources if r.get("server") in {args.name, name}]
+    shortcuts = [r for r in shortcuts if r.get("host") in {args.name, name}]
+    if args.filter:
+        resources = filter_items(resources, args.filter)
+        shortcuts = filter_items(shortcuts, args.filter)
+    emit({
+        "sidecar": str(path),
+        "name": name,
+        "server": spec,
+        "resources": paginate_items(resources, args.page, args.page_size),
+        "shortcuts": paginate_items(shortcuts, args.page, args.page_size),
+    }, args.json)
+
+
+def cmd_resource_list(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    rows = flatten_resources(data)
+    if args.server:
+        name, _spec = find_server(data, args.server)
+        rows = [r for r in rows if r.get("server") in {args.server, name}]
+    if args.kind:
+        rows = [r for r in rows if r.get("kind") == args.kind]
+    if args.tag:
+        wanted = set(args.tag)
+        rows = [r for r in rows if (wanted & set(r.get("tags", [])))]
+    rows = filter_items(rows, args.filter)
+    emit({"sidecar": str(path), "results": paginate_items(rows, args.page, args.page_size)}, args.json)
+
+
+def cmd_resource_add(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    if args.server:
+        server_name, _server = find_server(data, args.server)
+        if not _server:
+            raise SystemExit(f"Server not found: {args.server}. Register it first with: server-md server register --name {args.server}")
+    else:
+        server_name = None
+    resources = data.setdefault("resources", {})
+    if not isinstance(resources, dict):
+        raise SystemExit("Invalid sidecar: resources must be an object")
+    if args.name in resources and not args.force:
+        raise SystemExit(f"Resource exists: {args.name}. Use --force to update.")
+    spec = {
+        "description": args.description or "",
+        "server": server_name,
+        "kind": args.kind,
+        "path": args.path,
+        "url": args.url,
+        "owner": args.owner,
+        "notes_file": args.notes_file,
+        "risk": args.risk,
+        "warnings": args.warning or [],
+        "tips": args.tip or [],
+        "constraints": args.constraint or [],
+        "tags": args.tag or [],
+    }
+    resources[args.name] = {k: v for k, v in spec.items() if v not in (None, "", [])}
+    save_sidecar_path(path, data, args.dry_run)
+    emit({"sidecar": str(path), "dry_run": args.dry_run, "resource": {"name": args.name, **resources[args.name]}}, args.json)
+
+
+def cmd_resource_show(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    resources = data.get("resources", {})
+    spec = resources.get(args.name) if isinstance(resources, dict) else None
+    if not isinstance(spec, dict):
+        raise SystemExit(f"Resource not found: {args.name}. Try: server-md resource list --filter {args.name} --json")
+    emit({"sidecar": str(path), "name": args.name, "resource": spec}, args.json)
+
+
+def cmd_server_list(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    rows = flatten_servers(data)
+    if args.tag:
+        wanted = set(args.tag)
+        rows = [r for r in rows if (wanted & set(r.get("tags", [])))]
+    rows = filter_items(rows, args.filter)
+    emit({"sidecar": str(path), "results": paginate_items(rows, args.page, args.page_size)}, args.json)
+
+
+def cmd_server_register(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    servers = data.setdefault("servers", {})
+    if not isinstance(servers, dict):
+        raise SystemExit("Invalid sidecar: servers must be an object")
+    if args.name in servers and not args.force:
+        raise SystemExit(f"Server exists: {args.name}. Use --force to update.")
+    current = servers.setdefault(args.name, {})
+    fields = {
+        "role": args.role,
+        "user": args.user,
+        "magic_dns": args.magic_dns,
+        "tailnet_ip": args.tailnet_ip,
+        "public_ip": args.public_ip,
+        "public_host": args.public_host,
+        "port": args.port,
+        "identity": args.identity,
+        "proxy_command": args.proxy_command,
+        "notes_file": args.notes_file,
+        "risk": args.risk,
+    }
+    for key, value in fields.items():
+        if value is not None:
+            current[key] = value
+    if args.alias:
+        current["aliases"] = sorted(set(current.get("aliases", []) + args.alias))
+    if args.tag:
+        current["tags"] = sorted(set(current.get("tags", []) + args.tag))
+    if args.warning:
+        current["warnings"] = sorted(set(current.get("warnings", []) + args.warning))
+    if args.tip:
+        current["tips"] = sorted(set(current.get("tips", []) + args.tip))
+    if args.constraint:
+        current["constraints"] = sorted(set(current.get("constraints", []) + args.constraint))
+    save_sidecar_path(path, data, args.dry_run)
+    emit({"sidecar": str(path), "dry_run": args.dry_run, "server": {"name": args.name, **current}}, args.json)
+
+
+def cmd_server_resolve(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    name, spec = find_server(data, args.name)
+    if not spec:
+        raise SystemExit(f"Server not found: {args.name}. Try: server-md server list --filter {args.name} --json")
+    emit({"sidecar": str(path), "name": name, "server": spec}, args.json)
+
+
+def cmd_server_connect(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    name, spec = find_server(data, args.name)
+    if not spec:
+        raise SystemExit(f"Server not found: {args.name}. Try: server-md server list --filter {args.name} --json")
+    command = render_ssh_command(spec, args.prefer)
+    emit({
+        "sidecar": str(path),
+        "name": name,
+        "prefer": args.prefer,
+        "command": command,
+        "executes": False,
+        "note": "This CLI renders the connection command; agents should ask before running it when risk is not read-only.",
+    }, args.json)
+
+
+def cmd_shortcut_list(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    rows = flatten_shortcuts(data)
+    if args.server:
+        name, _spec = find_server(data, args.server)
+        rows = [r for r in rows if r.get("host") in {args.server, name}]
+    if args.category:
+        rows = [r for r in rows if r.get("category") == args.category]
+    if args.tag:
+        wanted = set(args.tag)
+        rows = [r for r in rows if (wanted & set(r.get("tags", [])))]
+    rows = filter_items(rows, args.filter)
+    emit({"sidecar": str(path), "results": paginate_items(rows, args.page, args.page_size)}, args.json)
+
+
+def cmd_shortcut_show(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    shortcuts = data.get("shortcuts", {})
+    spec = shortcuts.get(args.category, {}).get(args.name) if isinstance(shortcuts, dict) else None
+    if not spec:
+        raise SystemExit(f"Shortcut not found: {args.category}/{args.name}. Try: server-md shortcut list --category {args.category} --json")
+    emit({"sidecar": str(path), "category": args.category, "name": args.name, "shortcut": spec}, args.json)
+
+
+def cmd_shortcut_add(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    shortcuts = data.setdefault("shortcuts", {})
+    if not isinstance(shortcuts, dict):
+        raise SystemExit("Invalid sidecar: shortcuts must be an object")
+    category = shortcuts.setdefault(args.category, {})
+    if not isinstance(category, dict):
+        raise SystemExit(f"Invalid sidecar: shortcuts.{args.category} must be an object")
+    if args.name in category and not args.force:
+        raise SystemExit(f"Shortcut exists: {args.category}/{args.name}. Use --force to update, or choose a non-duplicated name.")
+    spec = {
+        "description": args.description or "",
+        "command": args.command,
+        "host": args.host,
+        "risk": args.risk,
+        "execute_mode": args.execute_mode,
+        "warnings": args.warning or [],
+        "tips": args.tip or [],
+        "constraints": args.constraint or [],
+        "tags": args.tag or [],
+        "confirm": bool(args.confirm),
+        "notes": args.notes or "",
+    }
+    category[args.name] = {k: v for k, v in spec.items() if v not in (None, "", [])}
+    save_sidecar_path(path, data, args.dry_run)
+    emit({"sidecar": str(path), "dry_run": args.dry_run, "category": args.category, "name": args.name, "shortcut": category[args.name]}, args.json)
+
+
+def resolve_shortcut(data: dict[str, Any], category: str, name: str) -> dict[str, Any] | None:
+    shortcuts = data.get("shortcuts", {})
+    if not isinstance(shortcuts, dict):
+        return None
+    bucket = shortcuts.get(category, {})
+    if not isinstance(bucket, dict):
+        return None
+    spec = bucket.get(name)
+    return spec if isinstance(spec, dict) else None
+
+
+def cmd_shortcut_challenge(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    spec = resolve_shortcut(data, args.category, args.name)
+    if not spec:
+        raise SystemExit(f"Shortcut not found: {args.category}/{args.name}")
+    execution = ensure_execution_config(data)
+    command = str(spec.get("command", ""))
+    code = confirmation_code(str(execution.get("confirm_salt", "")), args.category, args.name, command)
+    emit({
+        "sidecar": str(path),
+        "category": args.category,
+        "name": args.name,
+        "risk": spec.get("risk", "read-only"),
+        "command_hash": command_hash(command),
+        "confirm_code": code,
+        "validity": "TOTP-style 30-second window; current step is accepted, and run allows one previous step for typing delay.",
+        "expires_in_seconds": 30 - (int(time.time()) % 30),
+        "note": "Do not store this code in prompts or docs. User must provide it explicitly to shortcut run --confirm-code.",
+    }, args.json)
+
+
+def cmd_shortcut_run(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    spec = resolve_shortcut(data, args.category, args.name)
+    if not spec:
+        raise SystemExit(f"Shortcut not found: {args.category}/{args.name}. Try: server-md shortcut list --category {args.category} --json")
+    execution = ensure_execution_config(data)
+    command = str(spec.get("command", ""))
+    mode = args.execute_mode or str(spec.get("execute_mode") or execution.get("default_mode") or "render")
+    risk = str(spec.get("risk", "read-only"))
+    log_path = args.log or str(execution.get("log", "~/.server-md/ops.jsonl"))
+    base_event = {
+        "event": "shortcut_run",
+        "sidecar": str(path),
+        "category": args.category,
+        "name": args.name,
+        "host": spec.get("host"),
+        "risk": risk,
+        "execute_mode": mode,
+        "command_hash": command_hash(command),
+    }
+    if mode != "auto":
+        append_jsonl(log_path, {**base_event, "outcome": "rendered"})
+        emit({**base_event, "command": command, "executed": False, "log": log_path, "note": "execute_mode is not auto; command rendered only."}, args.json)
+        return
+    if shortcut_requires_confirmation(spec):
+        expected_codes = valid_confirmation_codes(str(execution.get("confirm_salt", "")), args.category, args.name, command)
+        if args.confirm_code not in expected_codes:
+            append_jsonl(log_path, {**base_event, "outcome": "blocked_confirmation_required"})
+            emit({
+                **base_event,
+                "executed": False,
+                "blocked": True,
+                "reason": "confirmation required",
+                "log": log_path,
+                "next_step": f"Ask the user to run shortcut challenge for {args.category}/{args.name} and provide the confirm code.",
+            }, args.json)
+            sys.exit(2)
+    append_jsonl(log_path, {**base_event, "outcome": "started"})
+    completed = subprocess.run(command, shell=True, text=True, capture_output=True, timeout=args.timeout)
+    append_jsonl(log_path, {**base_event, "outcome": "completed", "returncode": completed.returncode})
+    emit({
+        **base_event,
+        "executed": True,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout[-args.output_limit:],
+        "stderr": completed.stderr[-args.output_limit:],
+        "log": log_path,
+    }, args.json)
+    if completed.returncode:
+        sys.exit(completed.returncode)
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    path = Path(args.path).expanduser()
+    sidecar_path = sidecar_path_for(path)
+    sidecar = {
+        "version": 1,
+        "role": args.role,
+        "priority": args.priority,
+        "markdown": path.name,
+        "inventory": args.inventory or "~/.server-md/inventory.json",
+        "environment_hint": args.environment_hint or detect_env()["environment"],
+        "tags": args.tag or [],
+        "servers": {},
+        "resources": {},
+        "shortcuts": {},
+        "execution": {"default_mode": "render", "log": "~/.server-md/ops.jsonl", "confirm_salt": secrets.token_hex(16)},
+        "shortcut_category_policy": "Shortcuts are mainly server-scoped. Create categories only when they reduce repeated work; reuse existing categories and avoid duplicate shortcuts.",
+        "notes": "Machine-readable sidecar for SERVER.md discovery and shortcuts; do not store secrets here.",
+    }
+    template = f"""# 服务器清单
+
+> 此文件是主副本，路径：`{path}`。
+> Windows / WSL / 远程服务器上的其它 SERVER.md 如无特别说明，均视为引导文件或机器运维卡片。
+
+## 快速索引
+
+- [本机环境](#本机环境)
+- [Tailnet / VPN / 内网拓扑](#tailnet--vpn--内网拓扑)
+- [服务器总表](#服务器总表)
+- [高风险操作确认规则](#高风险操作确认规则)
+- [详细参考文件](#详细参考文件)
+
+## 本机环境
+
+| 项 | 值 |
+|---|---|
+| 环境 | TODO: WSL / Windows / Ubuntu / remote Linux |
+| 主机名 | TODO |
+| 关键路径 | TODO |
+
+## Tailnet / VPN / 内网拓扑
+
+TODO
+
+## 服务器总表
+
+| 名称 | 入口 | 角色 | 风险 |
+|---|---|---|---|
+| TODO | TODO | TODO | TODO |
+
+## 高风险操作确认规则
+
+必须先确认：DNS / Cloudflare / 生产服务重启 / 数据删除 / token 轮换 / 数据库迁移。
+
+## 详细参考文件
+
+- `server-notes/README.md`
+"""
+    if args.dry_run:
+        emit({"path": str(path), "sidecar_path": str(sidecar_path), "would_write": template, "would_write_sidecar": sidecar}, args.json)
+        return
+    if path.exists() and not args.force:
+        raise SystemExit(f"Refusing to overwrite existing file: {path}. Use --force or --dry-run.")
+    if sidecar_path.exists() and not args.force:
+        raise SystemExit(f"Refusing to overwrite existing sidecar: {sidecar_path}. Use --force or --dry-run.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(template, encoding="utf-8")
+    sidecar_path.write_text(json.dumps(sidecar, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    emit({"created": str(path), "sidecar_created": str(sidecar_path)}, args.json)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="server-md", description="Query and maintain compact server-md.json sidecar data.")
+    p = argparse.ArgumentParser(prog="server-md", description="Query and maintain server-md.json sidecar data; SERVER.md is informational only.")
     p.add_argument("--reveal", action="store_true", help="Reveal secret-like values in output; default masks them.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    locate = sub.add_parser("locate", help="Locate canonical sidecar and informational Markdown path.")
-    locate.add_argument("--json", action="store_true")
+    locate = sub.add_parser("locate", help="Locate canonical sidecar and informational SERVER.md path.")
+    locate.add_argument("--verbose", action="store_true", help="Include all candidates and sidecar details.")
+    locate.add_argument("--json", action="store_true", help="Emit JSON.")
     locate.set_defaults(func=cmd_locate)
 
-    env = sub.add_parser("env", help="Describe current environment.")
-    env.add_argument("--json", action="store_true")
-    env.set_defaults(func=lambda a: emit(env_info(), a.json))
+    env = sub.add_parser("env", help="Describe current host environment.")
+    env.add_argument("--json", action="store_true", help="Emit JSON.")
+    env.set_defaults(func=lambda a: emit(detect_env(), a.json))
 
     red = sub.add_parser("redact-check", help="Scan files for likely secrets before publishing.")
-    red.add_argument("paths", nargs="+")
-    red.add_argument("--fix", action="store_true")
-    red.add_argument("--json", action="store_true")
-    red.set_defaults(func=cmd_redact)
+    red.add_argument("paths", nargs="+", help="Files or directories to scan.")
+    red.add_argument("--fix", action="store_true", help="Mask detected secret-like values in place.")
+    red.add_argument("--json", action="store_true", help="Emit JSON.")
+    red.set_defaults(func=cmd_redact_check)
 
-    srv = sub.add_parser("server", help="Manage servers.")
-    srv_sub = srv.add_subparsers(dest="server_cmd", required=True)
-    for name, func in [("list", cmd_server_list), ("resolve", cmd_server_resolve), ("connect", cmd_server_connect), ("brief", cmd_server_brief)]:
-        sp = srv_sub.add_parser(name)
-        sp.add_argument("--sidecar")
-        if name != "list":
-            sp.add_argument("--name", required=True)
-        sp.add_argument("--tag", action="append")
-        sp.add_argument("--filter")
-        sp.add_argument("--page", type=int, default=1)
-        sp.add_argument("--page-size", type=int, default=20)
-        sp.add_argument("--json", action="store_true")
-        sp.set_defaults(func=func)
-    reg = srv_sub.add_parser("register")
-    for flag in ["name", "role", "user", "public-host", "public-ip", "tailnet-ip", "magic-dns", "identity", "notes-file", "risk"]:
-        reg.add_argument("--" + flag, required=(flag == "name"))
-    for flag in ["alias", "tag", "warning", "tip", "constraint"]:
-        reg.add_argument("--" + flag, action="append")
-    reg.add_argument("--sidecar"); reg.add_argument("--dry-run", action="store_true"); reg.add_argument("--force", action="store_true"); reg.add_argument("--json", action="store_true")
-    reg.set_defaults(func=cmd_server_register)
-
-    res = sub.add_parser("resource", help="Manage resources.")
+    res = sub.add_parser("resource", help="Register and find important server projects, directories, repos, configs, and data paths.")
     res_sub = res.add_subparsers(dest="resource_cmd", required=True)
-    rl = res_sub.add_parser("list")
-    for flag in ["sidecar", "server", "filter"]: rl.add_argument("--" + flag)
-    rl.add_argument("--tag", action="append"); rl.add_argument("--page", type=int, default=1); rl.add_argument("--page-size", type=int, default=20); rl.add_argument("--json", action="store_true")
-    rl.set_defaults(func=cmd_resource_list)
-    ra = res_sub.add_parser("add")
-    for flag in ["name", "server", "kind", "path", "url", "description", "risk", "notes-file"]:
-        ra.add_argument("--" + flag, required=(flag == "name"))
-    for flag in ["tag", "warning", "tip", "constraint"]: ra.add_argument("--" + flag, action="append")
-    ra.add_argument("--sidecar"); ra.add_argument("--dry-run", action="store_true"); ra.add_argument("--force", action="store_true"); ra.add_argument("--json", action="store_true")
-    ra.set_defaults(func=cmd_resource_add)
 
-    sc = sub.add_parser("shortcut", help="Manage shortcuts.")
+    res_list = res_sub.add_parser("list", help="List important resources with pagination and filters.")
+    res_list.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    res_list.add_argument("--server", help="Filter by server name or alias.")
+    res_list.add_argument("--kind", choices=["project", "directory", "repo", "config", "data", "backup", "service", "other"], help="Filter by resource kind.")
+    res_list.add_argument("--tag", action="append", help="Filter by tag; repeatable.")
+    res_list.add_argument("--filter", help="Case-insensitive substring filter across resource record.")
+    res_list.add_argument("--page", type=int, default=1, help="Page number, starting at 1.")
+    res_list.add_argument("--page-size", type=int, default=20, help="Items per page; 0 disables pagination.")
+    res_list.add_argument("--json", action="store_true", help="Emit JSON.")
+    res_list.set_defaults(func=cmd_resource_list)
+
+    res_add = res_sub.add_parser("add", help="Register or update one important resource.")
+    res_add.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    res_add.add_argument("--name", required=True)
+    res_add.add_argument("--server", help="Server name or alias this resource belongs to.")
+    res_add.add_argument("--kind", choices=["project", "directory", "repo", "config", "data", "backup", "service", "other"], default="directory")
+    res_add.add_argument("--path", help="Path on the server or local machine.")
+    res_add.add_argument("--url", help="Related URL, if any.")
+    res_add.add_argument("--description")
+    res_add.add_argument("--owner")
+    res_add.add_argument("--notes-file")
+    res_add.add_argument("--risk", choices=["read-only", "low", "medium", "high"], default="read-only")
+    res_add.add_argument("--warning", action="append", help="Resource warning; repeatable.")
+    res_add.add_argument("--tip", action="append", help="Resource tip; repeatable.")
+    res_add.add_argument("--constraint", action="append", help="Resource constraint; repeatable.")
+    res_add.add_argument("--tag", action="append")
+    res_add.add_argument("--dry-run", action="store_true", help="Preview without writing.")
+    res_add.add_argument("--force", action="store_true", help="Update existing resource.")
+    res_add.add_argument("--json", action="store_true", help="Emit JSON.")
+    res_add.set_defaults(func=cmd_resource_add)
+
+    res_show = res_sub.add_parser("show", help="Show one important resource.")
+    res_show.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    res_show.add_argument("--name", required=True)
+    res_show.add_argument("--json", action="store_true", help="Emit JSON.")
+    res_show.set_defaults(func=cmd_resource_show)
+
+    srv = sub.add_parser("server", help="Register and resolve servers from server-md.json; renders built-in SSH connection commands.")
+    srv_sub = srv.add_subparsers(dest="server_cmd", required=True)
+
+    srv_list = srv_sub.add_parser("list", help="List registered servers with pagination and filters.")
+    srv_list.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    srv_list.add_argument("--tag", action="append", help="Filter by tag; repeatable.")
+    srv_list.add_argument("--filter", help="Case-insensitive substring filter across server record.")
+    srv_list.add_argument("--page", type=int, default=1, help="Page number, starting at 1.")
+    srv_list.add_argument("--page-size", type=int, default=20, help="Items per page; 0 disables pagination.")
+    srv_list.add_argument("--json", action="store_true", help="Emit JSON.")
+    srv_list.set_defaults(func=cmd_server_list)
+
+    srv_reg = srv_sub.add_parser("register", help="Register or update one server and its aliases.")
+    srv_reg.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    srv_reg.add_argument("--name", required=True)
+    srv_reg.add_argument("--alias", action="append", help="Alias for this server; repeatable.")
+    srv_reg.add_argument("--role")
+    srv_reg.add_argument("--user")
+    srv_reg.add_argument("--magic-dns")
+    srv_reg.add_argument("--tailnet-ip")
+    srv_reg.add_argument("--public-ip")
+    srv_reg.add_argument("--public-host")
+    srv_reg.add_argument("--port", type=int)
+    srv_reg.add_argument("--identity")
+    srv_reg.add_argument("--proxy-command")
+    srv_reg.add_argument("--notes-file")
+    srv_reg.add_argument("--risk")
+    srv_reg.add_argument("--warning", action="append", help="Server warning; repeatable.")
+    srv_reg.add_argument("--tip", action="append", help="Server tip; repeatable.")
+    srv_reg.add_argument("--constraint", action="append", help="Server constraint; repeatable.")
+    srv_reg.add_argument("--tag", action="append")
+    srv_reg.add_argument("--dry-run", action="store_true", help="Preview without writing.")
+    srv_reg.add_argument("--force", action="store_true", help="Update existing server.")
+    srv_reg.add_argument("--json", action="store_true", help="Emit JSON.")
+    srv_reg.set_defaults(func=cmd_server_register)
+
+    srv_resolve = srv_sub.add_parser("resolve", help="Resolve a server name or alias.")
+    srv_resolve.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    srv_resolve.add_argument("--name", required=True)
+    srv_resolve.add_argument("--json", action="store_true", help="Emit JSON.")
+    srv_resolve.set_defaults(func=cmd_server_resolve)
+
+
+    srv_brief = srv_sub.add_parser("brief", help="Return one server plus matching resources and shortcuts in one compact JSON response.")
+    srv_brief.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    srv_brief.add_argument("--name", required=True)
+    srv_brief.add_argument("--tag", action="append", help="Filter resources/shortcuts by tag; repeatable.")
+    srv_brief.add_argument("--filter", help="Case-insensitive substring filter across resources and shortcuts.")
+    srv_brief.add_argument("--page", type=int, default=1, help="Page number, starting at 1.")
+    srv_brief.add_argument("--page-size", type=int, default=20, help="Items per page; 0 disables pagination.")
+    srv_brief.add_argument("--json", action="store_true", help="Emit JSON.")
+    srv_brief.set_defaults(func=cmd_server_brief)
+
+    srv_conn = srv_sub.add_parser("connect", help="Render the built-in SSH command for a server name or alias; does not execute it.")
+    srv_conn.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    srv_conn.add_argument("--name", required=True)
+    srv_conn.add_argument("--prefer", choices=["auto", "tailnet", "public"], default="auto")
+    srv_conn.add_argument("--json", action="store_true", help="Emit JSON.")
+    srv_conn.set_defaults(func=cmd_server_connect)
+
+    sc = sub.add_parser("shortcut", help="Manage registered server shortcut commands in server-md.json; never executes them.")
     sc_sub = sc.add_subparsers(dest="shortcut_cmd", required=True)
-    sl = sc_sub.add_parser("list")
-    for flag in ["sidecar", "server", "category", "filter"]: sl.add_argument("--" + flag)
-    sl.add_argument("--tag", action="append"); sl.add_argument("--page", type=int, default=1); sl.add_argument("--page-size", type=int, default=20); sl.add_argument("--json", action="store_true")
-    sl.set_defaults(func=cmd_shortcut_list)
-    sa = sc_sub.add_parser("add")
-    for flag in ["category", "name", "command"]: sa.add_argument("--" + flag, required=True)
-    for flag in ["sidecar", "host", "description", "risk", "execute-mode"]: sa.add_argument("--" + flag)
-    for flag in ["tag", "warning", "tip", "constraint"]: sa.add_argument("--" + flag, action="append")
-    sa.add_argument("--confirm", action="store_true"); sa.add_argument("--dry-run", action="store_true"); sa.add_argument("--force", action="store_true"); sa.add_argument("--json", action="store_true")
-    sa.set_defaults(func=cmd_shortcut_add)
+
+    sc_list = sc_sub.add_parser("list", help="List registered shortcuts with pagination and filters.")
+    sc_list.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    sc_list.add_argument("--server", help="Filter by server name or alias.")
+    sc_list.add_argument("--category", help="Filter by category.")
+    sc_list.add_argument("--tag", action="append", help="Filter by tag; repeatable.")
+    sc_list.add_argument("--filter", help="Case-insensitive substring filter across shortcut record.")
+    sc_list.add_argument("--page", type=int, default=1, help="Page number, starting at 1.")
+    sc_list.add_argument("--page-size", type=int, default=20, help="Items per page; 0 disables pagination.")
+    sc_list.add_argument("--json", action="store_true", help="Emit JSON.")
+    sc_list.set_defaults(func=cmd_shortcut_list)
+
+    sc_show = sc_sub.add_parser("show", help="Show one registered shortcut without executing it.")
+    sc_show.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    sc_show.add_argument("--category", required=True)
+    sc_show.add_argument("--name", required=True)
+    sc_show.add_argument("--json", action="store_true", help="Emit JSON.")
+    sc_show.set_defaults(func=cmd_shortcut_show)
+
+    sc_add = sc_sub.add_parser("add", help="Create or update a shortcut record; does not execute it.")
+    sc_add.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    sc_add.add_argument("--category", required=True, help="Category, e.g. health, logs, deploy, tunnel.")
+    sc_add.add_argument("--name", required=True, help="Unique shortcut name inside the category.")
+    sc_add.add_argument("--command", required=True, help="Command template to register; never executed by this CLI.")
+    sc_add.add_argument("--description")
+    sc_add.add_argument("--host")
+    sc_add.add_argument("--risk", choices=["read-only", "low", "medium", "high"], default="read-only")
+    sc_add.add_argument("--execute-mode", choices=["render", "manual", "auto"], default="render", help="Whether shortcut run renders only, requires manual copy, or may execute.")
+    sc_add.add_argument("--warning", action="append", help="Shortcut warning; repeatable.")
+    sc_add.add_argument("--tip", action="append", help="Shortcut tip; repeatable.")
+    sc_add.add_argument("--constraint", action="append", help="Shortcut constraint; repeatable.")
+    sc_add.add_argument("--tag", action="append")
+    sc_add.add_argument("--confirm", action="store_true", help="Mark shortcut as requiring explicit confirmation before any agent runs it.")
+    sc_add.add_argument("--notes")
+    sc_add.add_argument("--dry-run", action="store_true", help="Preview without writing.")
+    sc_add.add_argument("--force", action="store_true", help="Update an existing shortcut.")
+    sc_add.add_argument("--json", action="store_true", help="Emit JSON.")
+    sc_add.set_defaults(func=cmd_shortcut_add)
+
+    sc_ch = sc_sub.add_parser("challenge", help="Generate a salted confirmation code for a risky shortcut.")
+    sc_ch.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    sc_ch.add_argument("--category", required=True)
+    sc_ch.add_argument("--name", required=True)
+    sc_ch.add_argument("--json", action="store_true", help="Emit JSON.")
+    sc_ch.set_defaults(func=cmd_shortcut_challenge)
+
+    sc_run = sc_sub.add_parser("run", help="Render or execute a registered shortcut according to execute_mode; logs JSONL.")
+    sc_run.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    sc_run.add_argument("--category", required=True)
+    sc_run.add_argument("--name", required=True)
+    sc_run.add_argument("--execute-mode", choices=["render", "manual", "auto"], help="Override registered execute_mode for this invocation.")
+    sc_run.add_argument("--confirm-code", help="Required for risk=medium/high or confirm=true shortcuts when executing.")
+    sc_run.add_argument("--log", help="JSONL log path; defaults to execution.log in sidecar.")
+    sc_run.add_argument("--timeout", type=int, default=60)
+    sc_run.add_argument("--output-limit", type=int, default=4000)
+    sc_run.add_argument("--json", action="store_true", help="Emit JSON.")
+    sc_run.set_defaults(func=cmd_shortcut_run)
+
+    inv = sub.add_parser("inventory", help="Manage structured JSON inventory data.")
+    inv_sub = inv.add_subparsers(dest="inventory_cmd", required=True)
+
+    inv_init = inv_sub.add_parser("init", help="Create an empty inventory JSON file.")
+    inv_init.add_argument("--inventory", help="Inventory JSON path; default ~/.server-md/inventory.json.")
+    inv_init.add_argument("--dry-run", action="store_true", help="Preview without writing.")
+    inv_init.add_argument("--force", action="store_true", help="Overwrite existing inventory.")
+    inv_init.add_argument("--json", action="store_true", help="Emit JSON.")
+    inv_init.set_defaults(func=cmd_inventory_init)
+
+    inv_list = inv_sub.add_parser("list", help="List hosts, services, or the whole inventory.")
+    inv_list.add_argument("--inventory", help="Inventory JSON path; default ~/.server-md/inventory.json.")
+    inv_list.add_argument("--kind", choices=["all", "hosts", "services"], default="all")
+    inv_list.add_argument("--tag", action="append", help="Filter by tag; repeatable.")
+    inv_list.add_argument("--host", help="Filter services by host, or match a host name.")
+    inv_list.add_argument("--filter", help="Case-insensitive substring filter across JSON record.")
+    inv_list.add_argument("--page", type=int, default=1, help="Page number, starting at 1.")
+    inv_list.add_argument("--page-size", type=int, default=20, help="Items per page; 0 disables pagination.")
+    inv_list.add_argument("--json", action="store_true", help="Emit JSON.")
+    inv_list.set_defaults(func=cmd_inventory_list)
+
+    host_set = inv_sub.add_parser("host-set", help="Create or update one host record.")
+    host_set.add_argument("--inventory", help="Inventory JSON path; default ~/.server-md/inventory.json.")
+    host_set.add_argument("--name", required=True)
+    host_set.add_argument("--role")
+    host_set.add_argument("--os")
+    host_set.add_argument("--user")
+    host_set.add_argument("--public-ip")
+    host_set.add_argument("--tailnet-ip")
+    host_set.add_argument("--magic-dns")
+    host_set.add_argument("--ssh")
+    host_set.add_argument("--risk")
+    host_set.add_argument("--notes-file")
+    host_set.add_argument("--tag", action="append")
+    host_set.add_argument("--dry-run", action="store_true", help="Preview without writing.")
+    host_set.add_argument("--json", action="store_true", help="Emit JSON.")
+    host_set.set_defaults(func=cmd_host_set)
+
+    svc_set = inv_sub.add_parser("service-set", help="Create or update one service record.")
+    svc_set.add_argument("--inventory", help="Inventory JSON path; default ~/.server-md/inventory.json.")
+    svc_set.add_argument("--name", required=True)
+    svc_set.add_argument("--host")
+    svc_set.add_argument("--kind")
+    svc_set.add_argument("--public-url")
+    svc_set.add_argument("--local-url")
+    svc_set.add_argument("--unit")
+    svc_set.add_argument("--config-path")
+    svc_set.add_argument("--data-path")
+    svc_set.add_argument("--healthcheck")
+    svc_set.add_argument("--risk")
+    svc_set.add_argument("--notes-file")
+    svc_set.add_argument("--tag", action="append")
+    svc_set.add_argument("--dry-run", action="store_true", help="Preview without writing.")
+    svc_set.add_argument("--json", action="store_true", help="Emit JSON.")
+    svc_set.set_defaults(func=cmd_service_set)
+
+    inv_val = inv_sub.add_parser("validate", help="Validate inventory references.")
+    inv_val.add_argument("--inventory", help="Inventory JSON path; default ~/.server-md/inventory.json.")
+    inv_val.add_argument("--json", action="store_true", help="Emit JSON.")
+    inv_val.set_defaults(func=cmd_inventory_validate)
+
+    init = sub.add_parser("init", help="Create a new SERVER.md skeleton.")
+    init.add_argument("--path", default="~/SERVER.md", help="Target path.")
+    init.add_argument("--role", default="canonical", choices=["canonical", "pointer", "machine-runbook"], help="Role stored in server-md.json.")
+    init.add_argument("--priority", type=int, default=100, help="Priority stored in server-md.json; higher wins locate.")
+    init.add_argument("--inventory", help="Inventory path stored in server-md.json.")
+    init.add_argument("--environment-hint", help="Environment hint stored in server-md.json.")
+    init.add_argument("--tag", action="append", help="Tag stored in server-md.json; repeatable.")
+    init.add_argument("--dry-run", action="store_true", help="Preview without writing.")
+    init.add_argument("--force", action="store_true", help="Overwrite existing file.")
+    init.add_argument("--json", action="store_true", help="Emit JSON.")
+    init.set_defaults(func=cmd_init)
+
     return p
 
 
 def main() -> None:
-    global REVEAL
+    global REVEAL_SECRETS
     parser = build_parser()
     args = parser.parse_args()
-    REVEAL = bool(getattr(args, "reveal", False))
+    REVEAL_SECRETS = bool(getattr(args, "reveal", False))
     args.func(args)
 
 
