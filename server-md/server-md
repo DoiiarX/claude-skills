@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import difflib
 import hashlib
 import json
 import os
@@ -542,7 +543,7 @@ def cmd_host_set(args: argparse.Namespace) -> None:
         "notes_file": args.notes_file,
     }
     for key, value in fields.items():
-        if value is not None:
+        if value not in (None, ""):
             current[key] = value
     if args.tag:
         current["tags"] = sorted(set(current.get("tags", []) + args.tag))
@@ -568,7 +569,7 @@ def cmd_service_set(args: argparse.Namespace) -> None:
         "notes_file": args.notes_file,
     }
     for key, value in fields.items():
-        if value is not None:
+        if value not in (None, ""):
             current[key] = value
     if args.tag:
         current["tags"] = sorted(set(current.get("tags", []) + args.tag))
@@ -712,7 +713,7 @@ def cmd_server_register(args: argparse.Namespace) -> None:
         "risk": args.risk,
     }
     for key, value in fields.items():
-        if value is not None:
+        if value not in (None, ""):
             current[key] = value
     if args.alias:
         current["aliases"] = sorted(set(current.get("aliases", []) + args.alias))
@@ -964,6 +965,53 @@ TODO
     sidecar_path.write_text(json.dumps(sidecar, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     emit({"created": str(path), "sidecar_created": str(sidecar_path)}, args.json)
 
+
+
+COMMAND_TREE = {
+    "locate": [],
+    "env": [],
+    "redact-check": [],
+    "init": [],
+    "resource": ["list", "show", "add"],
+    "server": ["list", "register", "resolve", "connect", "brief"],
+    "shortcut": ["list", "show", "add", "challenge", "run"],
+    "inventory": ["init", "list", "host-set", "service-set", "validate"],
+}
+
+
+def command_hint(argv: list[str]) -> str | None:
+    if not argv:
+        return None
+    if any(arg == "--revel" for arg in argv):
+        return "Unknown option '--revel'. Did you mean '--reveal'? Usage: server-md --reveal <subcommand> ..."
+    if any(arg == "--revert" for arg in argv):
+        return "Unknown option '--revert'. For revealing masked values use '--reveal' before the subcommand."
+
+    tokens = [arg for arg in argv if not arg.startswith("-")]
+    if not tokens:
+        return None
+    top = tokens[0]
+    if top not in COMMAND_TREE:
+        choices = list(COMMAND_TREE)
+        close = difflib.get_close_matches(top, choices, n=3, cutoff=0.45)
+        suffix = f" Did you mean: {', '.join(close)}?" if close else f" Valid commands: {', '.join(choices)}."
+        return f"Unknown command '{top}'.{suffix}"
+
+    subcommands = COMMAND_TREE[top]
+    if not subcommands:
+        return None
+    if len(tokens) < 2:
+        return None
+    sub = tokens[1]
+    if sub not in subcommands:
+        full = [f"{top} {name}" for name in subcommands]
+        close = difflib.get_close_matches(f"{top} {sub}", full, n=3, cutoff=0.45)
+        if not close:
+            close_names = difflib.get_close_matches(sub, subcommands, n=3, cutoff=0.45)
+            close = [f"{top} {name}" for name in close_names]
+        suffix = f" Did you mean: {', '.join(close)}?" if close else f" Valid subcommands: {', '.join(full)}."
+        return f"Unknown command '{top} {sub}'.{suffix}"
+    return None
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="server-md", description="Query and maintain server-md.json sidecar data; SERVER.md is informational only.")
@@ -1223,6 +1271,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     global REVEAL_SECRETS
+    hint = command_hint(sys.argv[1:])
+    if hint:
+        print(f"server-md: {hint}", file=sys.stderr)
+        raise SystemExit(2)
     parser = build_parser()
     args = parser.parse_args()
     REVEAL_SECRETS = bool(getattr(args, "reveal", False))

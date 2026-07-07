@@ -42,6 +42,90 @@ allowed-tools: Bash
 
 只有在新增 CLI 功能、修 CLI bug、或用户明确要求看人类说明时，才打开 `SERVER.md`。
 
+
+## CLI 速查
+
+默认输出会 mask secret-like 字段和值。不要主动揭示真实 secret；只有用户明确要求查看真实值时，才使用本节末尾的高级参数。
+
+### locate / env
+
+```bash
+server-md locate --json
+server-md env --json
+```
+
+### server
+
+```bash
+server-md server list --json
+server-md server resolve --name <name-or-alias> --json
+server-md server connect --name <name-or-alias> --prefer tailnet --json
+server-md server brief --name <name-or-alias> --tag <topic> --json
+server-md server register --name <name> --alias <alias> --user <user> --magic-dns <host> --json
+```
+
+Notes:
+- `connect` only renders an SSH command; do not execute it unless the user asks.
+- Optional fields such as `tailnet_ip`, `magic_dns`, `public_ip`, `public_host`, `identity`, `proxy_command`, `notes_file`, `user`, and `port` may be absent.
+- Prefer omitting unknown optional fields over writing empty strings.
+
+### resource
+
+```bash
+server-md resource list --server <name-or-alias> --tag <topic> --json
+server-md resource show --name <resource-name> --json
+server-md resource add --name <name> --server <server> --kind project --path <path> --tag <tag> --json
+```
+
+### shortcut
+
+```bash
+server-md shortcut list --server <name-or-alias> --tag <topic> --json
+server-md shortcut show --category <category> --name <name> --json
+server-md shortcut add --category health --name <name> --host <server> --command '<cmd>' --risk read-only --execute-mode render --json
+server-md shortcut challenge --category <category> --name <name> --json
+server-md shortcut run --category <category> --name <name> --json
+server-md shortcut run --category <category> --name <name> --confirm-code <code> --json
+```
+
+Rules:
+- `list` and `show` only inspect records.
+- `run` follows the registered `execute_mode`: `render`, `manual`, or `auto`.
+- `risk=medium/high` or `confirm=true` requires `challenge`; the user must provide the confirmation code.
+- Without explicit authorization, render commands instead of executing remote operations.
+
+### inventory
+
+```bash
+server-md inventory init --json
+server-md inventory list --kind hosts --json
+server-md inventory list --kind services --host <host> --tag <tag> --json
+server-md inventory host-set --name <host> --tailnet-ip <ip> --tag <tag> --json
+server-md inventory service-set --name <service> --host <host> --unit <unit> --healthcheck <url> --json
+server-md inventory validate --json
+```
+
+### redact-check
+
+```bash
+server-md redact-check <paths...> --json
+server-md redact-check <paths...> --fix --json
+```
+
+- `--fix` masks detected secret-like values in place.
+- Keep masked output by default.
+
+### 高级：显示被掩码的真实值
+
+`--reveal` 是全局参数，必须放在子命令前。只有用户明确要求查看真实值时才用：
+
+```bash
+server-md --reveal <subcommand> ...
+server-md --reveal redact-check <paths...> --json
+```
+
+Do not use `--reveal` for routine diagnostics, examples, docs, or A/B tests.
+
 ## 核心原则
 
 1. **JSON 优先，Markdown 退场**
