@@ -91,9 +91,9 @@ server-md resource add --name <name> --server <server> --kind project --path <pa
 ```bash
 server-md shortcut list --server <name-or-alias> --tag <topic> --status active --limit 20 --json
 server-md shortcut show --category <category> --name <name> --json
-server-md shortcut add --category health --name <name> --host <server> --command '<cmd>' --risk read-only --execute-mode render --status active --traffic-role primary --json
+server-md shortcut add --category health --name <name> --host <server> --command '<cmd with {{param}}>' --param param=default --risk read-only --execute-mode render --status active --traffic-role primary --json
 server-md shortcut challenge --category <category> --name <name> --json
-server-md shortcut run --category <category> --name <name> --execute-mode auto
+server-md shortcut run --category <category> --name <name> --execute-mode auto --arg param=value
 server-md shortcut run --category <category> --name <name> --execute-mode auto --raw
 server-md shortcut run --category <category> --name <name> --execute-mode auto --raw --json
 server-md shortcut run --category <category> --name <name> --execute-mode auto --detail
@@ -105,6 +105,8 @@ Rules:
 - `list` and `show` only inspect records.
 - `add` writes shortcut metadata directly into `server-md.json`; do not create wrapper files/directories, clone repositories, or change CLI code just to register a shortcut.
 - A shortcut may target any registered server via `--host <server-or-alias>`; it is not limited to the local machine.
+- Template placeholders use `{{name}}`. Register safe defaults with `shortcut add --param name=value`; override at run time with repeated `shortcut run --arg name=value`.
+- Template values are constrained to a safe character set (`letters/digits/_.:@%+=,/-`) and are substituted by the CLI, not by shell eval.
 - `run` follows the registered `execute_mode`: `render`, `manual`, or `auto`.
 - `run` has two output shapes: raw and detail. Raw prints only stdout/stderr and is the default for log-reading; detail includes metadata plus stdout/stderr.
 - `--json` is only a format switch for the selected shape: `--raw --json` returns `{stdout,stderr}`, while `--detail --json` returns the full envelope.

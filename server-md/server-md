@@ -317,6 +317,38 @@ def shortcut_requires_confirmation(spec: dict[str, Any]) -> bool:
     return bool(spec.get("confirm")) or str(spec.get("risk", "read-only")) in {"medium", "high"}
 
 
+def parse_key_values(values: list[str] | None, label: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for raw in values or []:
+        if "=" not in raw:
+            raise SystemExit(f"Invalid {label}: {raw!r}. Expected key=value.")
+        key, value = raw.split("=", 1)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            raise SystemExit(f"Invalid {label} key: {key!r}. Use letters, digits, and underscore; do not start with a digit.")
+        if len(value) > 512 or re.search(r"[\x00-\x1f\x7f]", value):
+            raise SystemExit(f"Invalid {label} value for {key!r}: control characters or overly long values are not allowed.")
+        if not re.fullmatch(r"[A-Za-z0-9_.:@%+=,/-]*", value):
+            raise SystemExit(f"Unsafe {label} value for {key!r}. Allowed characters: letters digits _ . : @ % + = , / -")
+        parsed[key] = value
+    return parsed
+
+
+def render_shortcut_command(spec: dict[str, Any], arg_values: list[str] | None = None) -> str:
+    command = str(spec.get("command", ""))
+    params = spec.get("params", {})
+    if not isinstance(params, dict):
+        params = {}
+    values = {str(k): str(v) for k, v in params.items() if v not in (None, "")}
+    values.update(parse_key_values(arg_values, "--arg"))
+    placeholders = sorted(set(re.findall(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}", command)))
+    missing = [key for key in placeholders if key not in values]
+    if missing:
+        raise SystemExit(f"Missing shortcut args: {', '.join(missing)}. Pass --arg key=value or set defaults with shortcut add --param key=value.")
+    for key in placeholders:
+        command = command.replace("{{" + key + "}}", values[key])
+    return command
+
+
 def confirmation_code_for_step(salt: str, category: str, name: str, command: str, step: int) -> str:
     payload = f"{salt}|{step}|{category}|{name}|{command}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:10]
@@ -1006,6 +1038,7 @@ def cmd_shortcut_add(args: argparse.Namespace) -> None:
         "confirm": bool(args.confirm),
         "status": args.status,
         "traffic_role": args.traffic_role,
+        "params": parse_key_values(args.param, "--param"),
         "notes": args.notes or "",
     }
     category[args.name] = {k: v for k, v in spec.items() if v not in (None, "", [])}
@@ -1053,7 +1086,7 @@ def cmd_shortcut_run(args: argparse.Namespace) -> None:
     if not spec:
         raise SystemExit(f"Shortcut not found: {args.category}/{args.name}. Try: server-md shortcut list --category {args.category} --json")
     execution = ensure_execution_config(data)
-    command = str(spec.get("command", ""))
+    command = render_shortcut_command(spec, args.arg)
     mode = args.execute_mode or str(spec.get("execute_mode") or execution.get("default_mode") or "render")
     risk = str(spec.get("risk", "read-only"))
     log_path = args.log or str(execution.get("log", "~/.server-md/ops.jsonl"))
@@ -1474,6 +1507,7 @@ def build_parser() -> argparse.ArgumentParser:
     sc_add.add_argument("--tip", action="append", help="Shortcut tip; repeatable.")
     sc_add.add_argument("--constraint", action="append", help="Shortcut constraint; repeatable.")
     sc_add.add_argument("--tag", action="append")
+    sc_add.add_argument("--param", action="append", help="Default template parameter key=value; repeatable. Used for {{key}} placeholders.")
     sc_add.add_argument("--confirm", action="store_true", help="Mark shortcut as requiring explicit confirmation before any agent runs it.")
     add_state_write_args(sc_add)
     sc_add.add_argument("--notes")
@@ -1498,6 +1532,7 @@ def build_parser() -> argparse.ArgumentParser:
     sc_run.add_argument("--log", help="JSONL log path; defaults to execution.log in sidecar.")
     sc_run.add_argument("--timeout", type=int, default=60)
     sc_run.add_argument("--output-limit", type=int, default=4000)
+    sc_run.add_argument("--arg", action="append", help="Template parameter key=value; repeatable. Replaces {{key}} placeholders.")
     sc_run.add_argument("--raw", action="store_true", help="Raw mode: print only stdout/stderr; this is the default output shape.")
     sc_run.add_argument("--detail", action="store_true", help="Detail mode: include metadata plus stdout/stderr.")
     sc_run.add_argument("--json", action="store_true", help="Emit selected output shape as JSON.")
