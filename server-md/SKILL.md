@@ -36,7 +36,8 @@ allowed-tools: Bash
 - `locate --json`：返回 compact 主副本/sidecar 定位；默认不要 `--verbose`。
 - `server list|resolve|connect|probe|brief`：服务器查询；`connect` 只渲染 SSH 命令，不执行；`probe` 做连通性排查。
 - `resource list|show|add`：资源查询/注册，支持 `warnings`、`tips`、`constraints`。
-- `shortcut list|show|add|run`：快捷命令查询/渲染，支持 `--server`、`--tag`、warnings/tips/constraints。
+- `shortcut list|show|add|run`：快捷命令查询/渲染，支持 `--server`、`--tag`、warnings/tips/constraints；`run` 会写 JSONL 日志。
+- `log path|tail`：查看 shortcut run 的日志位置和最近事件。
 - `redact-check`：发布前脱敏扫描。
 - `inventory *`：结构化 inventory 维护。
 
@@ -45,7 +46,7 @@ allowed-tools: Bash
 
 ## CLI 速查
 
-默认输出会 mask secret-like 字段和值。不要主动揭示真实 secret；只有用户明确要求查看真实值时，才使用本节末尾的高级参数。
+默认输出会 mask secret-like 字段和值，也会 mask IP/host/command/output 等连接目标。不要主动揭示真实 secret 或网络地址；只有用户明确要求查看真实值时，才使用本节末尾的高级参数。
 
 ### locate / env
 
@@ -64,7 +65,7 @@ server-md server connect --name <name-or-alias> --prefer tailnet --json
 server-md server probe --name <name-or-alias> --prefer auto --timeout 5 --json
 server-md server probe --name <name-or-alias> --ssh --json
 server-md server brief --name <name-or-alias> --tag <topic> --status active --limit 20 --json
-server-md server register --name <name> --alias <alias> --user <user> --magic-dns <host> --status active --traffic-role primary --json
+server-md server register --name <name> --alias <alias> --user <user> --role <role> --magic-dns <host> --status active --traffic-role primary --json
 ```
 
 Notes:
@@ -72,7 +73,8 @@ Notes:
 - `probe` collects DNS, TCP/22, and optional SSH findings in one result; use it for connectivity troubleshooting before guessing.
 - List-like commands use `--limit` and optional `--tail` for compact head/tail-style output.
 - `--status` filters lifecycle state (`active`, `staging`, `deprecated`, `retired`, `disabled`, `unknown`); `--traffic-role` filters serving role (`primary`, `secondary`, `staging`, `none`).
-- Optional fields such as `tailnet_ip`, `magic_dns`, `public_ip`, `public_host`, `identity`, `proxy_command`, `notes_file`, `user`, and `port` may be absent.
+- `--role` and `--user` may be repeated; server records store them as `roles[]` and `users[]` while remaining compatible with old singular `role`/`user` sidecars.
+- Optional fields such as `tailnet_ip`, `magic_dns`, `public_ip`, `public_host`, `identity`, `proxy_command`, `notes_file`, `users`, and `port` may be absent.
 - Prefer omitting unknown optional fields over writing empty strings.
 
 ### resource
@@ -98,8 +100,21 @@ server-md shortcut run --category <category> --name <name> --confirm-code <code>
 Rules:
 - `list` and `show` only inspect records.
 - `run` follows the registered `execute_mode`: `render`, `manual`, or `auto`.
+- Every `run` appends a masked JSONL event to `execution.log` (default `~/.server-md/ops.jsonl`).
 - `risk=medium/high` or `confirm=true` requires `challenge`; the user must provide the confirmation code.
 - Without explicit authorization, render commands instead of executing remote operations.
+
+### log
+
+```bash
+server-md log path --json
+server-md log tail --limit 20 --json
+server-md log tail --category health --name <shortcut-name> --json
+```
+
+Rules:
+- `log path` returns the configured JSONL log path.
+- `log tail` reads recent shortcut execution events; output stays masked by default.
 
 ### inventory
 
@@ -144,9 +159,10 @@ Do not use `--reveal` for routine diagnostics, examples, docs, or A/B tests.
    - 服务器上下文 = `server brief --name <name> [--tag <tag>] --json`。
    - 不要为了“确认一下”再读 Markdown。
 
-3. **敏感信息默认不输出**
+3. **敏感信息和网络地址默认不输出**
    - 不要输出 token、密码、私钥、SMTP 授权码、完整 Bearer token、完整 cloudflared token、兑换码私钥等。
-   - 命令示例使用环境变量占位。
+   - 默认也不要输出 IP、MagicDNS/public host、连接命令和探测输出里的地址；平时用别名、shortcut、`connect`/`run` 渲染流程承接。
+   - 命令示例使用环境变量或占位。
 
 4. **危险操作先确认**
    - 涉及公网、DNS、生产服务、数据、账号状态、删除、重启、token 轮换时，先给计划和影响，不直接执行。

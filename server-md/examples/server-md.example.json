@@ -19,8 +19,6 @@
         "prod",
         "web-prod"
       ],
-      "role": "Example production application host",
-      "user": "deploy",
       "public_host": "prod.example.com",
       "public_ip": "203.0.113.10",
       "tailnet_ip": "100.64.0.10",
@@ -42,15 +40,21 @@
         "Do not print environment-file contents or secrets."
       ],
       "status": "active",
-      "traffic_role": "primary"
+      "traffic_role": "primary",
+      "roles": [
+        "app-host",
+        "production-services"
+      ],
+      "users": [
+        "deploy",
+        "ubuntu"
+      ]
     },
     "example-staging": {
       "aliases": [
         "staging",
         "web-staging"
       ],
-      "role": "Example staging application host",
-      "user": "deploy",
       "public_host": "staging.example.com",
       "public_ip": "203.0.113.20",
       "tailnet_ip": "100.64.0.20",
@@ -63,7 +67,14 @@
         "web"
       ],
       "status": "active",
-      "traffic_role": "staging"
+      "traffic_role": "staging",
+      "roles": [
+        "app-host",
+        "staging"
+      ],
+      "users": [
+        "deploy"
+      ]
     }
   },
   "resources": {

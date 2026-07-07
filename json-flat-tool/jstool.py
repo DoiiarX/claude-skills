@@ -1359,7 +1359,7 @@ def cmd_schema(data: Any, title: str = "Inferred Schema"):
         "title": title,
     }
     schema.update(_infer(data))
-    print(json.dumps(schema, indent=2, ensure_ascii=False))
+    print(json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
 
 
 # ── I/O ────────────────────────────────────────────────────────────────────────
@@ -1385,7 +1385,7 @@ def emit_result(data: Any, filepath: Optional[str], force: bool):
         write_json(data, filepath)
         print(f"{C_ADD}Written to {filepath}{C_RESET}")
     else:
-        print(json.dumps(data, indent=2, ensure_ascii=False))
+        print(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
 
 
 # ── Fuzzy command suggestion ───────────────────────────────────────────────────

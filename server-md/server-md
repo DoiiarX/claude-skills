@@ -34,6 +34,16 @@ SENSITIVE_KEY_PARTS = [
     "client_secret", "apikey", "api_key", "authorization", "auth", "nodekey",
 ]
 
+SENSITIVE_NETWORK_KEYS = {
+    "public_ip", "tailnet_ip", "magic_dns", "public_host", "host", "hostname",
+    "target_host", "command", "output", "stdout", "stderr",
+}
+
+NETWORK_PATTERNS = [
+    re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+    re.compile(r"\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?){2,}\b", re.I),
+]
+
 def is_sensitive_key(key: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]", "", key.lower())
     return any(part.replace("_", "") in normalized for part in SENSITIVE_KEY_PARTS)
@@ -43,6 +53,27 @@ def mask_scalar(value: str) -> str:
     if len(value) <= 8:
         return "***"
     return f"{value[:4]}***{value[-4:]}"
+
+
+def mask_network_value(value: str) -> str:
+    if not value:
+        return value
+    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", value):
+        return "***.***.***.*** (masked; use server connect/run with explicit authorization)"
+    if "." in value and re.fullmatch(r"[A-Za-z0-9._-]+", value):
+        return "***.*** (masked; use server connect/run with explicit authorization)"
+    return "*** (masked; use server connect/run with explicit authorization)"
+
+
+def mask_network_text(text: str) -> str:
+    for pattern in NETWORK_PATTERNS:
+        text = pattern.sub(lambda m: mask_network_value(m.group(0)), text)
+    return text
+
+
+def is_sensitive_network_key(key: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9_]", "_", key.lower()).strip("_")
+    return normalized in SENSITIVE_NETWORK_KEYS or normalized.endswith("_ip") or normalized.endswith("_host")
 
 
 def mask_secret_text(text: str) -> str:
@@ -75,20 +106,25 @@ def mask_data(data: Any, parent_key: str = "") -> Any:
         for key, value in data.items():
             if is_sensitive_key(str(key)) and isinstance(value, str):
                 out[key] = mask_scalar(value) + " (masked; pass --reveal before the subcommand to show)"
+            elif is_sensitive_network_key(str(key)) and isinstance(value, str):
+                out[key] = mask_network_value(value)
             else:
                 out[key] = mask_data(value, str(key))
         return out
     if isinstance(data, list):
         return [mask_data(item, parent_key) for item in data]
     if isinstance(data, str):
-        return mask_secret_text(data)
+        text = mask_secret_text(data)
+        if is_sensitive_network_key(parent_key):
+            text = mask_network_text(text)
+        return text
     return data
 
 
 def emit(data: Any, as_json: bool) -> None:
     data = mask_data(data)
     if as_json:
-        print(json.dumps(data, ensure_ascii=False, indent=2))
+        print(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
         return
     if isinstance(data, str):
         print(data)
@@ -101,7 +137,7 @@ def emit(data: Any, as_json: bool) -> None:
     elif isinstance(data, dict):
         for k, v in data.items():
             if isinstance(v, (dict, list)):
-                print(f"{k}={json.dumps(v, ensure_ascii=False)}")
+                print(f"{k}={json.dumps(v, ensure_ascii=False, separators=(',', ':'))}")
             else:
                 print(f"{k}={v}")
 
@@ -290,8 +326,25 @@ def find_server(data: dict[str, Any], name_or_alias: str) -> tuple[str, dict[str
     return None, None
 
 
+def listify_values(*values: Any) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value in (None, ""):
+            continue
+        if isinstance(value, list):
+            result.extend(str(item) for item in value if item not in (None, ""))
+        else:
+            result.append(str(value))
+    return sorted(set(result))
+
+
+def first_value(spec: dict[str, Any], plural_key: str, singular_key: str, default: str | None = None) -> str | None:
+    values = listify_values(spec.get(plural_key), spec.get(singular_key))
+    return values[0] if values else default
+
+
 def render_ssh_command(spec: dict[str, Any], prefer: str = "auto") -> str:
-    user = spec.get("user") or "root"
+    user = first_value(spec, "users", "user", "root")
     target_host = None
     if prefer == "tailnet":
         target_host = spec.get("tailnet_ip") or spec.get("magic_dns")
@@ -467,9 +520,9 @@ def run_probe(label: str, command: list[str], timeout: int) -> dict[str, Any]:
     try:
         result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
         output = (result.stdout + result.stderr).strip()
-        return {"label": label, "command": command, "ok": result.returncode == 0, "returncode": result.returncode, "output": output[-2000:]}
+        return {"label": label, "ok": result.returncode == 0, "returncode": result.returncode, "output": output[-2000:]}
     except Exception as exc:
-        return {"label": label, "command": command, "ok": False, "error": str(exc)}
+        return {"label": label, "ok": False, "error": str(exc)}
 
 
 def cmd_redact_check(args: argparse.Namespace) -> None:
@@ -741,8 +794,6 @@ def cmd_server_register(args: argparse.Namespace) -> None:
         raise SystemExit(f"Server exists: {args.name}. Use --force to update.")
     current = servers.setdefault(args.name, {})
     fields = {
-        "role": args.role,
-        "user": args.user,
         "magic_dns": args.magic_dns,
         "tailnet_ip": args.tailnet_ip,
         "public_ip": args.public_ip,
@@ -758,6 +809,14 @@ def cmd_server_register(args: argparse.Namespace) -> None:
     for key, value in fields.items():
         if value not in (None, ""):
             current[key] = value
+    roles = listify_values(current.get("roles"), current.get("role"), args.role)
+    if roles:
+        current["roles"] = roles
+        current.pop("role", None)
+    users = listify_values(current.get("users"), current.get("user"), args.user)
+    if users:
+        current["users"] = users
+        current.pop("user", None)
     if args.alias:
         current["aliases"] = sorted(set(current.get("aliases", []) + args.alias))
     if args.tag:
@@ -975,7 +1034,40 @@ def cmd_shortcut_run(args: argparse.Namespace) -> None:
         sys.exit(completed.returncode)
 
 
+def cmd_log_path(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    execution = ensure_execution_config(data)
+    log_path = args.log or str(execution.get("log", "~/.server-md/ops.jsonl"))
+    emit({"sidecar": str(path), "log": log_path}, args.json)
+
+
+def cmd_log_tail(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    execution = ensure_execution_config(data)
+    log_path = Path(args.log or str(execution.get("log", "~/.server-md/ops.jsonl"))).expanduser()
+    if not log_path.exists():
+        emit({"sidecar": str(path), "log": str(log_path), "events": [], "total_read": 0}, args.json)
+        return
+    lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    selected = lines[-args.limit:] if args.limit > 0 else lines
+    events = []
+    for line in selected:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            event = {"raw": line}
+        if args.category and event.get("category") != args.category:
+            continue
+        if args.name and event.get("name") != args.name:
+            continue
+        events.append(event)
+    emit({"sidecar": str(path), "log": str(log_path), "events": events, "total_read": len(selected)}, args.json)
+
+
 def cmd_init(args: argparse.Namespace) -> None:
+
     path = Path(args.path).expanduser()
     sidecar_path = sidecar_path_for(path)
     sidecar = {
@@ -1054,6 +1146,7 @@ COMMAND_TREE = {
     "resource": ["list", "show", "add"],
     "server": ["list", "register", "resolve", "connect", "probe", "brief"],
     "shortcut": ["list", "show", "add", "challenge", "run"],
+    "log": ["path", "tail"],
     "inventory": ["init", "list", "host-set", "service-set", "validate"],
 }
 
@@ -1184,8 +1277,8 @@ def build_parser() -> argparse.ArgumentParser:
     srv_reg.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
     srv_reg.add_argument("--name", required=True)
     srv_reg.add_argument("--alias", action="append", help="Alias for this server; repeatable.")
-    srv_reg.add_argument("--role")
-    srv_reg.add_argument("--user")
+    srv_reg.add_argument("--role", action="append", help="Server role; repeatable. Stored as roles[].")
+    srv_reg.add_argument("--user", action="append", help="SSH/login user; repeatable. Stored as users[].")
     srv_reg.add_argument("--magic-dns")
     srv_reg.add_argument("--tailnet-ip")
     srv_reg.add_argument("--public-ip")
@@ -1298,6 +1391,24 @@ def build_parser() -> argparse.ArgumentParser:
     sc_run.add_argument("--output-limit", type=int, default=4000)
     sc_run.add_argument("--json", action="store_true", help="Emit JSON.")
     sc_run.set_defaults(func=cmd_shortcut_run)
+
+    log = sub.add_parser("log", help="Inspect shortcut execution JSONL logs.")
+    log_sub = log.add_subparsers(dest="log_cmd", required=True)
+
+    log_path = log_sub.add_parser("path", help="Show the configured shortcut execution log path.")
+    log_path.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    log_path.add_argument("--log", help="Override log path instead of execution.log.")
+    log_path.add_argument("--json", action="store_true", help="Emit JSON.")
+    log_path.set_defaults(func=cmd_log_path)
+
+    log_tail = log_sub.add_parser("tail", help="Show recent shortcut execution log events.")
+    log_tail.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    log_tail.add_argument("--log", help="Override log path instead of execution.log.")
+    log_tail.add_argument("--limit", type=int, default=20, help="Show last N log lines; use 0 for all.")
+    log_tail.add_argument("--category", help="Filter by shortcut category.")
+    log_tail.add_argument("--name", help="Filter by shortcut name.")
+    log_tail.add_argument("--json", action="store_true", help="Emit JSON.")
+    log_tail.set_defaults(func=cmd_log_tail)
 
     inv = sub.add_parser("inventory", help="Manage structured JSON inventory data.")
     inv_sub = inv.add_subparsers(dest="inventory_cmd", required=True)

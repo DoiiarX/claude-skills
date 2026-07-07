@@ -19,12 +19,14 @@ Use this only when maintaining the skill or refining safety behavior. Normal loo
 ## Shortcut safety
 
 - `shortcut list` and `shortcut show` only inspect records.
-- `shortcut run` follows the registered `execute_mode`.
+- `shortcut run` follows the registered `execute_mode` and appends masked JSONL events to `execution.log`.
+- Use `server-md log path --json` to find the log path and `server-md log tail --limit 20 --json` to inspect recent events.
 - `risk=medium/high` or `confirm=true` requires `shortcut challenge`; the user must provide the confirmation code.
 - Without explicit authorization, render commands instead of executing remote operations.
 
 ## Secret safety
 
 - Keep masked output by default.
-- Do not print environment-file contents, tokens, passwords, private keys, full bearer strings, or node keys.
+- Do not print environment-file contents, tokens, passwords, private keys, full bearer strings, node keys, IP addresses, DNS names, or raw connection commands.
+- Use aliases and registered shortcuts for routine operations; use command-rendering or explicit execution only after authorization.
 - Use `--reveal` only when the user explicitly asks to see the real value.
