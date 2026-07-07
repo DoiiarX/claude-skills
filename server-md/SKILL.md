@@ -126,6 +126,24 @@ Rules:
 - `log path` returns the configured JSONL log path.
 - `log tail` reads recent shortcut execution events; output stays masked by default.
 
+### sync
+
+```bash
+server-md sync plan --server <name-or-alias> --json
+server-md sync pull --server <name-or-alias> --dry-run --json
+server-md sync push --server <name-or-alias> --scope resources --tag <topic> --dry-run --json
+server-md sync bidir --server <name-or-alias> --conflict merge --dry-run --json
+```
+
+Rules:
+- `sync` only exchanges the target server slice: `servers[target]`, resources whose `server` is target, and shortcuts whose `host` is target.
+- Default `--max-depth` is `1`; deeper recursion is intentionally unsupported in this version.
+- `push` never sends the whole local sidecar to a child server; `pull` never imports unrelated remote servers.
+- Writes create `server-md.json.bak` next to the written sidecar and then atomically replace the JSON file.
+- Conflicts default to `fail`; use `--conflict local|remote|newer|merge` only when the desired winner is clear.
+- Remote commands are wrapped in `bash -lc` so a fish default shell does not parse bash syntax.
+- Use repeated `--server` to sync selected servers only; do not use sync as a broadcast mechanism.
+
 ### inventory
 
 ```bash

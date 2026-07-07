@@ -43,6 +43,43 @@ List and brief commands support `--status` and `--traffic-role` filters. Write c
 
 List-like commands use `--limit N` and optional `--tail` for compact head/tail-style output.
 
+## Sync slice shape
+
+`server-md sync` does not copy the whole sidecar. It extracts a per-server slice:
+
+```json
+{
+  "version": 1,
+  "sync": {
+    "target": "quant-rust",
+    "max_depth": 1,
+    "scopes": ["server", "resources", "shortcuts"],
+    "tags": [],
+    "generated_at": "2026-07-08T00:00:00+00:00",
+    "source_hash": "sha256..."
+  },
+  "servers": {
+    "quant-rust": {}
+  },
+  "resources": {},
+  "shortcuts": {}
+}
+```
+
+Slice validation rules:
+
+- `servers` may include only the target server.
+- `resources` must have `server == target`.
+- `shortcuts` must have `host == target`.
+- `inventory`, execution salts, unrelated servers, and unrelated shortcuts are not valid slice content.
+- First-version sync only supports `max_depth=1`; no recursive fan-out or child-server traversal.
+
+Write safety:
+
+- Sync writes create `server-md.json.bak` before replacing a sidecar.
+- The new JSON is written to a same-directory temporary file and atomically moved into place.
+- `--dry-run` never writes the JSON or backup.
+
 ## Query rule
 
 Normal tasks should use one compact CLI query first, especially `locate --json`, `server brief --json`, or `server probe --json` for connectivity diagnostics, and stop when the answer is complete.

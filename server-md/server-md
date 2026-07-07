@@ -295,6 +295,42 @@ def save_sidecar_path(path: Path, data: dict[str, Any], dry_run: bool) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def stable_hash(value: Any) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def atomic_write_json_with_backup(path: Path, data: dict[str, Any], dry_run: bool) -> dict[str, Any]:
+    result: dict[str, Any] = {"path": str(path), "dry_run": dry_run, "backup": None, "wrote": False}
+    if dry_run:
+        result["would_write"] = True
+        return result
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        backup = path.with_name(path.name + ".bak")
+        backup.write_bytes(path.read_bytes())
+        result["backup"] = str(backup)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        result["wrote"] = True
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return result
+
+
 def ensure_execution_config(data: dict[str, Any]) -> dict[str, Any]:
     execution = data.setdefault("execution", {})
     if not isinstance(execution, dict):
@@ -438,6 +474,18 @@ def listify_values(*values: Any) -> list[str]:
 def first_value(spec: dict[str, Any], plural_key: str, singular_key: str, default: str | None = None) -> str | None:
     values = listify_values(spec.get(plural_key), spec.get(singular_key))
     return values[0] if values else default
+
+
+def canonical_server_ref(data: dict[str, Any], raw: Any) -> str | None:
+    if raw in (None, ""):
+        return None
+    name, _spec = find_server(data, str(raw))
+    return name or str(raw)
+
+
+def shortcut_host_matches(data: dict[str, Any], raw_host: Any, target: str) -> bool:
+    host = canonical_server_ref(data, raw_host)
+    return host == target
 
 
 def render_ssh_command(spec: dict[str, Any], prefer: str = "auto") -> str:
@@ -805,6 +853,292 @@ def cmd_server_brief(args: argparse.Namespace) -> None:
 
 
 def cmd_resource_list(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    rows = flatten_resources(data)
+    if args.server:
+        name, _spec = find_server(data, args.server)
+        rows = [r for r in rows if r.get("server") in {args.server, name}]
+    if args.kind:
+        rows = [r for r in rows if r.get("kind") == args.kind]
+    if args.tag:
+        wanted = set(args.tag)
+        rows = [r for r in rows if (wanted & set(r.get("tags", [])))]
+    if args.status:
+        rows = [r for r in rows if r.get("status") == args.status]
+    if args.traffic_role:
+        rows = [r for r in rows if r.get("traffic_role") == args.traffic_role]
+    rows = filter_items(rows, args.filter)
+    emit({"sidecar": str(path), "results": limit_items(rows, args.limit, args.tail)}, args.json)
+
+
+MERGE_UNION_LIST_FIELDS = {"aliases", "roles", "users", "tags", "warnings", "tips", "constraints"}
+SYNC_TOP_LEVEL_KEYS = {"version", "sync", "servers", "resources", "shortcuts"}
+VALID_SYNC_SCOPES = {"server", "resources", "shortcuts"}
+
+
+def parse_sync_scopes(raw: list[str] | None) -> set[str]:
+    if not raw:
+        return set(VALID_SYNC_SCOPES)
+    scopes: set[str] = set()
+    for item in raw:
+        for part in str(item).split(","):
+            value = part.strip().lower()
+            if not value:
+                continue
+            if value == "all":
+                scopes.update(VALID_SYNC_SCOPES)
+            elif value in VALID_SYNC_SCOPES:
+                scopes.add(value)
+            else:
+                raise SystemExit(f"Invalid sync scope: {part!r}. Use all, server, resources, or shortcuts.")
+    return scopes or set(VALID_SYNC_SCOPES)
+
+
+def resolve_sync_targets(data: dict[str, Any], names: list[str]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    targets: list[dict[str, Any]] = []
+    for raw in names:
+        name, spec = find_server(data, raw)
+        if not spec or not name:
+            raise SystemExit(f"Server not found: {raw}. Try: server-md server list --filter {raw} --json")
+        if name in seen:
+            continue
+        seen.add(name)
+        targets.append({"requested": raw, "name": name, "server": spec})
+    return targets
+
+
+def tags_match(spec: dict[str, Any], tags: list[str] | None) -> bool:
+    if not tags:
+        return True
+    return bool(set(tags) & set(spec.get("tags", [])))
+
+
+def extract_server_slice(
+    data: dict[str, Any],
+    target: str,
+    scopes: set[str],
+    tags: list[str] | None = None,
+    max_depth: int = 1,
+) -> dict[str, Any]:
+    if max_depth != 1:
+        raise SystemExit("server-md sync currently supports --max-depth 1 only.")
+    result: dict[str, Any] = {
+        "version": 1,
+        "sync": {
+            "target": target,
+            "max_depth": max_depth,
+            "scopes": sorted(scopes),
+            "tags": tags or [],
+            "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        },
+        "servers": {},
+        "resources": {},
+        "shortcuts": {},
+    }
+    servers = data.get("servers", {})
+    if "server" in scopes and isinstance(servers, dict) and isinstance(servers.get(target), dict):
+        result["servers"][target] = json.loads(json.dumps(servers[target]))
+    resources = data.get("resources", {})
+    if "resources" in scopes and isinstance(resources, dict):
+        for name, spec in resources.items():
+            if isinstance(spec, dict) and canonical_server_ref(data, spec.get("server")) == target and tags_match(spec, tags):
+                item = json.loads(json.dumps(spec))
+                item["server"] = target
+                result["resources"][name] = item
+    shortcuts = data.get("shortcuts", {})
+    if "shortcuts" in scopes and isinstance(shortcuts, dict):
+        for category, entries in shortcuts.items():
+            if not isinstance(entries, dict):
+                continue
+            selected: dict[str, Any] = {}
+            for name, spec in entries.items():
+                if isinstance(spec, dict) and shortcut_host_matches(data, spec.get("host"), target) and tags_match(spec, tags):
+                    item = json.loads(json.dumps(spec))
+                    item["host"] = target
+                    selected[name] = item
+            if selected:
+                result["shortcuts"][category] = selected
+    result["sync"]["source_hash"] = stable_hash({"servers": result["servers"], "resources": result["resources"], "shortcuts": result["shortcuts"]})
+    return result
+
+
+def validate_server_slice(slice_data: dict[str, Any], target: str, scopes: set[str]) -> list[str]:
+    errors: list[str] = []
+    for key in slice_data:
+        if key not in SYNC_TOP_LEVEL_KEYS:
+            errors.append(f"unexpected top-level key: {key}")
+    sync = slice_data.get("sync", {})
+    if isinstance(sync, dict) and sync.get("max_depth") not in (None, 1):
+        errors.append("sync slice max_depth must be 1")
+    servers = slice_data.get("servers", {})
+    if isinstance(servers, dict):
+        for name in servers:
+            if name != target:
+                errors.append(f"slice includes non-target server: {name}")
+    elif servers not in (None, {}):
+        errors.append("slice servers must be an object")
+    resources = slice_data.get("resources", {})
+    if isinstance(resources, dict):
+        for name, spec in resources.items():
+            if isinstance(spec, dict):
+                if spec.get("server") != target:
+                    errors.append(f"resource {name} is not scoped to {target}")
+            else:
+                errors.append(f"resource {name} must be an object")
+    elif resources not in (None, {}):
+        errors.append("slice resources must be an object")
+    shortcuts = slice_data.get("shortcuts", {})
+    if isinstance(shortcuts, dict):
+        for category, entries in shortcuts.items():
+            if not isinstance(entries, dict):
+                errors.append(f"shortcut category {category} must be an object")
+                continue
+            for name, spec in entries.items():
+                if isinstance(spec, dict):
+                    if spec.get("host") != target:
+                        errors.append(f"shortcut {category}/{name} is not scoped to {target}")
+                else:
+                    errors.append(f"shortcut {category}/{name} must be an object")
+    elif shortcuts not in (None, {}):
+        errors.append("slice shortcuts must be an object")
+    return errors
+
+
+def merge_values(local_value: Any, remote_value: Any, path: str) -> tuple[Any, list[str]]:
+    if local_value == remote_value:
+        return local_value, []
+    key = path.rsplit(".", 1)[-1]
+    if isinstance(local_value, list) and isinstance(remote_value, list) and key in MERGE_UNION_LIST_FIELDS:
+        return sorted(set(str(x) for x in local_value + remote_value)), []
+    if isinstance(local_value, dict) and isinstance(remote_value, dict):
+        merged = dict(local_value)
+        conflicts: list[str] = []
+        for k, v in remote_value.items():
+            if k not in merged:
+                merged[k] = v
+            else:
+                merged[k], child = merge_values(merged[k], v, f"{path}.{k}")
+                conflicts.extend(child)
+        return merged, conflicts
+    return local_value, [path]
+
+
+def parse_record_time(spec: dict[str, Any]) -> str | None:
+    for key in ["updated_at", "modified_at", "mtime"]:
+        value = spec.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def resolve_record_conflict(local: Any, remote: Any, conflict: str, label: str) -> tuple[Any, str, list[str]]:
+    if local == remote:
+        return local, "unchanged", []
+    if conflict == "local":
+        return local, "kept-local", []
+    if conflict == "remote":
+        return remote, "updated", []
+    if conflict == "newer" and isinstance(local, dict) and isinstance(remote, dict):
+        lt = parse_record_time(local)
+        rt = parse_record_time(remote)
+        if lt and rt:
+            return (remote, "updated", []) if rt > lt else (local, "kept-local", [])
+        if rt and not lt:
+            return remote, "updated", []
+        if lt and not rt:
+            return local, "kept-local", []
+    if conflict == "merge":
+        merged, conflicts = merge_values(local, remote, label)
+        if not conflicts:
+            return merged, "merged", []
+        return local, "conflict", conflicts
+    return local, "conflict", [label]
+
+
+def apply_server_slice(
+    base: dict[str, Any],
+    incoming: dict[str, Any],
+    target: str,
+    scopes: set[str],
+    tags: list[str] | None,
+    conflict: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    errors = validate_server_slice(incoming, target, scopes)
+    report: dict[str, Any] = {"added": [], "updated": [], "merged": [], "unchanged": [], "kept_local": [], "conflicts": [], "rejected": errors}
+    if errors:
+        return base, report
+    out = json.loads(json.dumps(base))
+    out.setdefault("servers", {})
+    out.setdefault("resources", {})
+    out.setdefault("shortcuts", {})
+
+    if "server" in scopes:
+        incoming_servers = incoming.get("servers", {}) if isinstance(incoming.get("servers", {}), dict) else {}
+        if target in incoming_servers:
+            servers = out.setdefault("servers", {})
+            if target not in servers:
+                servers[target] = incoming_servers[target]
+                report["added"].append(f"server:{target}")
+            else:
+                chosen, action, conflicts = resolve_record_conflict(servers[target], incoming_servers[target], conflict, f"server:{target}")
+                if conflicts:
+                    report["conflicts"].extend(conflicts)
+                else:
+                    servers[target] = chosen
+                    report[{"unchanged": "unchanged", "kept-local": "kept_local"}.get(action, action)].append(f"server:{target}")
+
+    if "resources" in scopes:
+        resources = out.setdefault("resources", {})
+        incoming_resources = incoming.get("resources", {}) if isinstance(incoming.get("resources", {}), dict) else {}
+        for name, spec in incoming_resources.items():
+            if not isinstance(spec, dict) or not tags_match(spec, tags):
+                continue
+            label = f"resource:{name}"
+            if name not in resources:
+                resources[name] = spec
+                report["added"].append(label)
+            else:
+                chosen, action, conflicts = resolve_record_conflict(resources[name], spec, conflict, label)
+                if conflicts:
+                    report["conflicts"].extend(conflicts)
+                else:
+                    resources[name] = chosen
+                    report[{"unchanged": "unchanged", "kept-local": "kept_local"}.get(action, action)].append(label)
+
+    if "shortcuts" in scopes:
+        shortcuts = out.setdefault("shortcuts", {})
+        incoming_shortcuts = incoming.get("shortcuts", {}) if isinstance(incoming.get("shortcuts", {}), dict) else {}
+        for category, entries in incoming_shortcuts.items():
+            if not isinstance(entries, dict):
+                continue
+            dest = shortcuts.setdefault(category, {})
+            for name, spec in entries.items():
+                if not isinstance(spec, dict) or not tags_match(spec, tags):
+                    continue
+                label = f"shortcut:{category}/{name}"
+                if name not in dest:
+                    dest[name] = spec
+                    report["added"].append(label)
+                else:
+                    chosen, action, conflicts = resolve_record_conflict(dest[name], spec, conflict, label)
+                    if conflicts:
+                        report["conflicts"].extend(conflicts)
+                    else:
+                        dest[name] = chosen
+                        report[{"unchanged": "unchanged", "kept-local": "kept_local"}.get(action, action)].append(label)
+    return out, report
+
+
+def report_has_changes(report: dict[str, Any]) -> bool:
+    return bool(report.get("added") or report.get("updated") or report.get("merged"))
+
+
+def report_has_errors(report: dict[str, Any]) -> bool:
+    return bool(report.get("conflicts") or report.get("rejected"))
+
+
     path = resolve_sidecar_path(args.sidecar)
     data = load_sidecar_path(path)
     rows = flatten_resources(data)
@@ -1201,6 +1535,224 @@ def cmd_log_tail(args: argparse.Namespace) -> None:
     emit({"sidecar": str(path), "log": str(log_path), "events": events, "total_read": len(selected)}, args.json)
 
 
+def remote_command(script: str) -> str:
+    return "bash -lc " + shlex.quote(script)
+
+
+def run_remote_json(spec: dict[str, Any], prefer: str, script: str, timeout: int, input_text: str | None = None) -> dict[str, Any]:
+    command = ssh_command_parts(spec, prefer) + [remote_command(script)]
+    try:
+        completed = subprocess.run(command, input=input_text, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(f"Remote command timed out after {timeout}s") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit {completed.returncode}"
+        raise SystemExit(f"Remote command failed: {mask_network_text(mask_secret_text(detail))}")
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Remote command did not return JSON: {exc}") from exc
+    if not isinstance(result, dict):
+        raise SystemExit("Remote command returned non-object JSON")
+    if result.get("ok") is False:
+        raise SystemExit(str(result.get("error", "remote operation failed")))
+    return result
+
+
+def fetch_remote_sidecar(spec: dict[str, Any], prefer: str, remote_sidecar: str | None, timeout: int) -> tuple[str, dict[str, Any]]:
+    py = r'''
+import json, pathlib, subprocess, sys
+raw = sys.argv[1]
+path = raw
+if not path:
+    found = None
+    for cmd in (["server-md", "locate", "--json"], [str(pathlib.Path.home()/".local/bin/server-md"), "locate", "--json"]):
+        try:
+            p = subprocess.run(cmd, text=True, capture_output=True, timeout=10)
+        except Exception:
+            continue
+        if p.returncode == 0:
+            try:
+                data = json.loads(p.stdout)
+                found = data.get("sidecar") or data.get("sidecar_path")
+            except Exception:
+                found = None
+        if found:
+            break
+    if not found:
+        print(json.dumps({"ok": False, "error": "remote sidecar not found; pass --remote-sidecar"}))
+        raise SystemExit(0)
+    path = found
+p = pathlib.Path(path).expanduser()
+if p.exists():
+    data = json.loads(p.read_text(encoding="utf-8"))
+else:
+    data = {"version": 1, "servers": {}, "resources": {}, "shortcuts": {}}
+print(json.dumps({"ok": True, "sidecar": str(p), "data": data}, ensure_ascii=False, separators=(",", ":")))
+'''
+    script = "python3 -c " + shlex.quote(py) + " " + shlex.quote(remote_sidecar or "")
+    result = run_remote_json(spec, prefer, script, timeout)
+    data = result.get("data")
+    if not isinstance(data, dict):
+        raise SystemExit("Remote sidecar data must be an object")
+    data.setdefault("servers", {})
+    data.setdefault("resources", {})
+    data.setdefault("shortcuts", {})
+    return str(result.get("sidecar", remote_sidecar or "")), data
+
+
+def write_remote_sidecar(spec: dict[str, Any], prefer: str, remote_sidecar: str, data: dict[str, Any], dry_run: bool, timeout: int) -> dict[str, Any]:
+    py = r'''
+import json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1]).expanduser()
+dry_run = sys.argv[2] == "1"
+data = json.load(sys.stdin)
+result = {"ok": True, "path": str(path), "dry_run": dry_run, "backup": None, "wrote": False}
+if dry_run:
+    result["would_write"] = True
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    raise SystemExit(0)
+path.parent.mkdir(parents=True, exist_ok=True)
+if path.exists():
+    backup = path.with_name(path.name + ".bak")
+    backup.write_bytes(path.read_bytes())
+    result["backup"] = str(backup)
+tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+try:
+    with tmp.open("w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    result["wrote"] = True
+finally:
+    if tmp.exists():
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+'''
+    script = "python3 -c " + shlex.quote(py) + " " + shlex.quote(remote_sidecar) + " " + ("1" if dry_run else "0")
+    return run_remote_json(spec, prefer, script, timeout, input_text=json.dumps(data, ensure_ascii=False))
+
+
+def sync_slice_counts(slice_data: dict[str, Any]) -> dict[str, int]:
+    shortcuts = slice_data.get("shortcuts", {})
+    shortcut_count = sum(len(v) for v in shortcuts.values() if isinstance(v, dict)) if isinstance(shortcuts, dict) else 0
+    return {
+        "servers": len(slice_data.get("servers", {}) if isinstance(slice_data.get("servers"), dict) else {}),
+        "resources": len(slice_data.get("resources", {}) if isinstance(slice_data.get("resources"), dict) else {}),
+        "shortcuts": shortcut_count,
+    }
+
+
+def sync_target_report(args: argparse.Namespace, local_data: dict[str, Any], target: dict[str, Any], scopes: set[str]) -> dict[str, Any]:
+    remote_sidecar, remote_data = fetch_remote_sidecar(target["server"], args.prefer, args.remote_sidecar, args.timeout)
+    local_slice = extract_server_slice(local_data, target["name"], scopes, args.tag, args.max_depth)
+    remote_slice = extract_server_slice(remote_data, target["name"], scopes, args.tag, args.max_depth)
+    return {
+        "requested": target["requested"],
+        "server": target["name"],
+        "remote_sidecar": remote_sidecar,
+        "local_slice_hash": stable_hash(local_slice),
+        "remote_slice_hash": stable_hash(remote_slice),
+        "same": stable_hash(local_slice) == stable_hash(remote_slice),
+        "local_counts": sync_slice_counts(local_slice),
+        "remote_counts": sync_slice_counts(remote_slice),
+        "_remote_data": remote_data,
+        "_local_slice": local_slice,
+        "_remote_slice": remote_slice,
+    }
+
+
+def strip_internal_sync_report(report: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in report.items() if not k.startswith("_")}
+
+
+def validate_sync_args(args: argparse.Namespace) -> set[str]:
+    if args.max_depth != 1:
+        raise SystemExit("server-md sync currently supports --max-depth 1 only.")
+    if args.remote_sidecar and len(args.server) != 1:
+        raise SystemExit("--remote-sidecar can only be used with one --server target.")
+    return parse_sync_scopes(args.scope)
+
+
+def cmd_sync_plan(args: argparse.Namespace) -> None:
+    scopes = validate_sync_args(args)
+    path = resolve_sidecar_path(args.sidecar)
+    local_data = load_sidecar_path(path)
+    targets = resolve_sync_targets(local_data, args.server)
+    reports = [strip_internal_sync_report(sync_target_report(args, local_data, target, scopes)) for target in targets]
+    emit({"operation": "plan", "local_sidecar": str(path), "scope": sorted(scopes), "tags": args.tag or [], "max_depth": args.max_depth, "targets": reports, "ok": True}, args.json)
+
+
+def cmd_sync_pull(args: argparse.Namespace) -> None:
+    scopes = validate_sync_args(args)
+    path = resolve_sidecar_path(args.sidecar)
+    local_data = load_sidecar_path(path)
+    targets = resolve_sync_targets(local_data, args.server)
+    reports = []
+    next_data = local_data
+    for target in targets:
+        info = sync_target_report(args, next_data, target, scopes)
+        merged, report = apply_server_slice(next_data, info["_remote_slice"], target["name"], scopes, args.tag, args.conflict)
+        reports.append({**strip_internal_sync_report(info), "changes": report, "would_write_local": report_has_changes(report)})
+        if report_has_errors(report):
+            emit({"operation": "pull", "local_sidecar": str(path), "targets": reports, "ok": False}, args.json)
+            raise SystemExit(1)
+        next_data = merged
+    write = atomic_write_json_with_backup(path, next_data, args.dry_run) if any(r.get("would_write_local") for r in reports) else {"wrote": False, "dry_run": args.dry_run}
+    emit({"operation": "pull", "local_sidecar": str(path), "write": write, "targets": reports, "ok": True}, args.json)
+
+
+def cmd_sync_push(args: argparse.Namespace) -> None:
+    scopes = validate_sync_args(args)
+    path = resolve_sidecar_path(args.sidecar)
+    local_data = load_sidecar_path(path)
+    targets = resolve_sync_targets(local_data, args.server)
+    reports = []
+    for target in targets:
+        info = sync_target_report(args, local_data, target, scopes)
+        remote_next, report = apply_server_slice(info["_remote_data"], info["_local_slice"], target["name"], scopes, args.tag, args.conflict)
+        item = {**strip_internal_sync_report(info), "changes": report, "would_write_remote": report_has_changes(report)}
+        if report_has_errors(report):
+            reports.append(item)
+            emit({"operation": "push", "local_sidecar": str(path), "targets": reports, "ok": False}, args.json)
+            raise SystemExit(1)
+        if report_has_changes(report):
+            item["remote_write"] = write_remote_sidecar(target["server"], args.prefer, info["remote_sidecar"], remote_next, args.dry_run, args.timeout)
+        reports.append(item)
+    emit({"operation": "push", "local_sidecar": str(path), "targets": reports, "ok": True}, args.json)
+
+
+def cmd_sync_bidir(args: argparse.Namespace) -> None:
+    scopes = validate_sync_args(args)
+    path = resolve_sidecar_path(args.sidecar)
+    local_data = load_sidecar_path(path)
+    targets = resolve_sync_targets(local_data, args.server)
+    reports = []
+    local_next = local_data
+    remote_writes: list[tuple[dict[str, Any], str, dict[str, Any], dict[str, Any]]] = []
+    for target in targets:
+        info = sync_target_report(args, local_next, target, scopes)
+        local_merged, pull_report = apply_server_slice(local_next, info["_remote_slice"], target["name"], scopes, args.tag, args.conflict)
+        remote_merged, push_report = apply_server_slice(info["_remote_data"], info["_local_slice"], target["name"], scopes, args.tag, args.conflict)
+        item = {**strip_internal_sync_report(info), "pull_changes": pull_report, "push_changes": push_report, "would_write_local": report_has_changes(pull_report), "would_write_remote": report_has_changes(push_report)}
+        reports.append(item)
+        if report_has_errors(pull_report) or report_has_errors(push_report):
+            emit({"operation": "bidir", "local_sidecar": str(path), "targets": reports, "ok": False}, args.json)
+            raise SystemExit(1)
+        local_next = local_merged
+        if report_has_changes(push_report):
+            remote_writes.append((target["server"], info["remote_sidecar"], remote_merged, item))
+    local_write = atomic_write_json_with_backup(path, local_next, args.dry_run) if any(r.get("would_write_local") for r in reports) else {"wrote": False, "dry_run": args.dry_run}
+    for spec, remote_sidecar, remote_data, item in remote_writes:
+        item["remote_write"] = write_remote_sidecar(spec, args.prefer, remote_sidecar, remote_data, args.dry_run, args.timeout)
+    emit({"operation": "bidir", "local_sidecar": str(path), "local_write": local_write, "targets": reports, "ok": True}, args.json)
+
+
 def cmd_init(args: argparse.Namespace) -> None:
 
     path = Path(args.path).expanduser()
@@ -1281,6 +1833,7 @@ COMMAND_TREE = {
     "resource": ["list", "show", "add"],
     "server": ["list", "register", "resolve", "connect", "probe", "brief"],
     "shortcut": ["list", "show", "add", "challenge", "run"],
+    "sync": ["plan", "pull", "push", "bidir"],
     "log": ["path", "tail"],
     "inventory": ["init", "list", "host-set", "service-set", "validate"],
 }
@@ -1618,6 +2171,43 @@ def build_parser() -> argparse.ArgumentParser:
     inv_val.add_argument("--inventory", help="Inventory JSON path; default ~/.server-md/inventory.json.")
     inv_val.add_argument("--json", action="store_true", help="Emit JSON.")
     inv_val.set_defaults(func=cmd_inventory_validate)
+
+    sync = sub.add_parser("sync", help="Synchronize per-server sidecar slices without broadcasting all server knowledge.")
+    sync_sub = sync.add_subparsers(dest="sync_cmd", required=True)
+
+    def add_sync_common_args(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--sidecar", help="Local server-md.json path; defaults to canonical sidecar.")
+        parser.add_argument("--server", action="append", required=True, help="Server name or alias to sync; repeatable.")
+        parser.add_argument("--scope", action="append", help="Sync scope: all, server, resources, shortcuts. Repeatable or comma-separated.")
+        parser.add_argument("--tag", action="append", help="Filter resources/shortcuts by tag; repeatable.")
+        parser.add_argument("--prefer", choices=["auto", "tailnet", "public"], default="auto")
+        parser.add_argument("--remote-sidecar", help="Remote sidecar path. Only allowed with one --server.")
+        parser.add_argument("--max-depth", type=int, default=1, help="Recursion limit. First version supports only 1.")
+        parser.add_argument("--timeout", type=int, default=30)
+        parser.add_argument("--dry-run", action="store_true", help="Preview without writing.")
+        parser.add_argument("--json", action="store_true", help="Emit JSON.")
+
+    def add_sync_conflict_arg(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--conflict", choices=["fail", "local", "remote", "newer", "merge"], default="fail")
+
+    sync_plan = sync_sub.add_parser("plan", help="Compare local and remote per-server slices without writing.")
+    add_sync_common_args(sync_plan)
+    sync_plan.set_defaults(func=cmd_sync_plan)
+
+    sync_pull = sync_sub.add_parser("pull", help="Pull remote per-server slices into local sidecar.")
+    add_sync_common_args(sync_pull)
+    add_sync_conflict_arg(sync_pull)
+    sync_pull.set_defaults(func=cmd_sync_pull)
+
+    sync_push = sync_sub.add_parser("push", help="Push local per-server slices into remote sidecar.")
+    add_sync_common_args(sync_push)
+    add_sync_conflict_arg(sync_push)
+    sync_push.set_defaults(func=cmd_sync_push)
+
+    sync_bidir = sync_sub.add_parser("bidir", help="Merge local and remote per-server slices both ways.")
+    add_sync_common_args(sync_bidir)
+    add_sync_conflict_arg(sync_bidir)
+    sync_bidir.set_defaults(func=cmd_sync_bidir)
 
     init = sub.add_parser("init", help="Create a new SERVER.md skeleton.")
     init.add_argument("--path", default="~/SERVER.md", help="Target path.")
