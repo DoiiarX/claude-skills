@@ -28,7 +28,7 @@
 - Prefer omitting unknown optional fields instead of writing empty strings.
 - The CLI should tolerate `null`, missing values, and empty strings in existing sidecars.
 - Do not store secret values. Store paths and operational warnings only.
-- Default CLI output masks IP addresses, DNS names, host fields, connection commands, and probe output. Use aliases, shortcuts, or explicit command-rendering flows for normal operation.
+- Default CLI output masks IP addresses, DNS names, host fields, and connection commands. Remote `stdout`/`stderr`/`output` remains readable with embedded secrets, IPs, and hosts redacted.
 
 ## Lifecycle fields
 

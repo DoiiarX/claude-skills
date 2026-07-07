@@ -36,8 +36,10 @@ SENSITIVE_KEY_PARTS = [
 
 SENSITIVE_NETWORK_KEYS = {
     "public_ip", "tailnet_ip", "magic_dns", "public_host", "host", "hostname",
-    "target_host", "command", "output", "stdout", "stderr",
+    "target_host", "command",
 }
+
+SENSITIVE_NETWORK_TEXT_KEYS = {"output", "stdout", "stderr"}
 
 NETWORK_PATTERNS = [
     re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
@@ -108,6 +110,8 @@ def mask_data(data: Any, parent_key: str = "") -> Any:
                 out[key] = mask_scalar(value) + " (masked; pass --reveal before the subcommand to show)"
             elif is_sensitive_network_key(str(key)) and isinstance(value, str):
                 out[key] = mask_network_value(value)
+            elif re.sub(r"[^a-z0-9_]", "_", str(key).lower()).strip("_") in SENSITIVE_NETWORK_TEXT_KEYS and isinstance(value, str):
+                out[key] = mask_network_text(mask_secret_text(value))
             else:
                 out[key] = mask_data(value, str(key))
         return out

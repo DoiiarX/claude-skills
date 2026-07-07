@@ -36,7 +36,7 @@ allowed-tools: Bash
 - `locate --json`：返回 compact 主副本/sidecar 定位；默认不要 `--verbose`。
 - `server list|resolve|connect|probe|brief`：服务器查询；`connect` 只渲染 SSH 命令，不执行；`probe` 做连通性排查。
 - `resource list|show|add`：资源查询/注册，支持 `warnings`、`tips`、`constraints`。
-- `shortcut list|show|add|run`：快捷命令查询/渲染，支持 `--server`、`--tag`、warnings/tips/constraints；`run` 会写 JSONL 日志。
+- `shortcut list|show|add|run`：快捷命令查询/渲染，支持 `--server`、`--tag`、warnings/tips/constraints；`run` 会写 JSONL 日志。新增快捷命令时，默认只用 `server-md shortcut add` 写入 sidecar，不要创建 wrapper 脚本、临时文件或修改 CLI。
 - `log path|tail`：查看 shortcut run 的日志位置和最近事件。
 - `redact-check`：发布前脱敏扫描。
 - `inventory *`：结构化 inventory 维护。
@@ -46,7 +46,7 @@ allowed-tools: Bash
 
 ## CLI 速查
 
-默认输出会 mask secret-like 字段和值，也会 mask IP/host/command/output 等连接目标。不要主动揭示真实 secret 或网络地址；只有用户明确要求查看真实值时，才使用本节末尾的高级参数。
+默认输出会 mask secret-like 字段和值，也会 mask IP/host/command 等连接目标。`stdout`/`stderr`/`output` 会保留可读日志内容，但会掩码其中的 secret、IP 和 host。不要主动揭示真实 secret 或网络地址；只有用户明确要求查看真实值时，才使用本节末尾的高级参数。
 
 ### locate / env
 
@@ -99,6 +99,8 @@ server-md shortcut run --category <category> --name <name> --confirm-code <code>
 
 Rules:
 - `list` and `show` only inspect records.
+- `add` writes shortcut metadata directly into `server-md.json`; do not create wrapper files/directories, clone repositories, or change CLI code just to register a shortcut.
+- A shortcut may target any registered server via `--host <server-or-alias>`; it is not limited to the local machine.
 - `run` follows the registered `execute_mode`: `render`, `manual`, or `auto`.
 - Every `run` appends a masked JSONL event to `execution.log` (default `~/.server-md/ops.jsonl`).
 - `risk=medium/high` or `confirm=true` requires `challenge`; the user must provide the confirmation code.
@@ -161,7 +163,8 @@ Do not use `--reveal` for routine diagnostics, examples, docs, or A/B tests.
 
 3. **敏感信息和网络地址默认不输出**
    - 不要输出 token、密码、私钥、SMTP 授权码、完整 Bearer token、完整 cloudflared token、兑换码私钥等。
-   - 默认也不要输出 IP、MagicDNS/public host、连接命令和探测输出里的地址；平时用别名、shortcut、`connect`/`run` 渲染流程承接。
+   - 默认也不要输出 IP、MagicDNS/public host 和连接命令；平时用别名、shortcut、`connect`/`run` 渲染流程承接。
+   - 远程命令的 `stdout`/`stderr` 可以保留结论性日志内容，但必须掩码其中的 secret、IP 和 host。
    - 命令示例使用环境变量或占位。
 
 4. **危险操作先确认**
