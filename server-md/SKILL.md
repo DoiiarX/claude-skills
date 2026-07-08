@@ -7,53 +7,81 @@ allowed-tools: Bash
 
 # SERVER.md 运维知识库 Skill
 
-这个 skill 用来维护个人服务器清单与运维手册。核心标准是机器可读的 `server-md.json` sidecar；Markdown 只做简短人类入口，建议保持 200 行以内。普通查询不要打开 references；只有维护 skill / CLI / schema / eval 时才读对应参考。
+这个 skill 用来通过 `server-md` CLI 查询和维护个人服务器清单、资源和运维快捷命令。常见需求走“需求词 → tag → shortcut/resource → run/show”的短路径；主副本定位、环境排查、schema 维护等场景再使用高级命令。
 
-## 必须使用 `server-md` CLI（sidecar 是唯一事实源）
+## 快速流程
 
-`server-md.json` 是核心标准和唯一结构化事实源。Markdown 只允许作为占位符和简短说明；事实查询只走 CLI。
+### 1. 从需求提取候选 tag
 
-禁止为了常见查询再调用 Markdown 读取或分段流程；如果 CLI 返回了足够信息，立即停止，不要二次验证。
+从用户原话提取 1–3 个自然 tag；优先用通用词、服务类型、资源类型。
 
-### 一跳查询规则
+| 用户说法 | 候选 tag |
+|---|---|
+| X / Twitter / 推文 | `twitter`, `x` |
+| 代理 / SOCKS / 转发 | `proxy`, `socks`, `tunnel` |
+| Cloudflare / DNS / tunnel | `cloudflare`, `cloudflared`, `tunnel` |
+| Tailnet / VPN / 节点网络 | `tailnet`, `tailscale`, `headscale` |
+| 数据库 / 备份 / 日志 | `database`, `backup`, `logs` |
 
-```bash
-# 判断主副本：只跑这一条，然后结束
-~/.claude/skills/server-md/server-md locate --json
-
-# 查询某服务器、相关资源和快捷命令：优先一条 brief
-~/.claude/skills/server-md/server-md server brief --name prod --tag web --json
-
-# 只查资源
-~/.claude/skills/server-md/server-md resource list --server prod --tag web --json
-
-# 只查快捷命令
-~/.claude/skills/server-md/server-md shortcut list --server prod --tag web --json
-```
-
-### 允许的常用命令
-
-- `locate --json`：返回 compact 主副本/sidecar 定位；默认不要 `--verbose`。
-- `server list|resolve|connect|probe|brief`：服务器查询；`connect` 只渲染 SSH 命令，不执行；`probe` 做连通性排查。
-- `resource list|show|add`：资源查询/注册，支持 `warnings`、`tips`、`constraints`。
-- `shortcut list|show|add|run`：快捷命令查询/渲染，支持 `--server`、`--tag`、warnings/tips/constraints；`run` 会写 JSONL 日志。新增快捷命令时，默认只用 `server-md shortcut add` 写入 sidecar，不要创建 wrapper 脚本、临时文件或修改 CLI。
-- `log path|tail`：查看 shortcut run 的日志位置和最近事件。
-- `redact-check`：发布前脱敏扫描。
-- `inventory *`：结构化 inventory 维护。
-
-只有在新增 CLI 功能、修 CLI bug、或用户明确要求看人类说明时，才打开 `SERVER.md`。
-
-
-## CLI 速查
-
-默认输出会 mask secret-like 字段和值，也会 mask IP/host/command/SSH 指纹等连接目标。Mask 格式为 `__MASKED_TYPE_hash__`，同一真实值在同一 CLI 安装目录内会稳定映射到同一 token，方便判断多行日志是否指向同一对象。`stdout`/`stderr`/`output` 会保留可读日志内容，但会掩码其中的 secret、IP、host 和 SSH 指纹。不要主动揭示真实 secret 或网络地址；只有用户明确要求查看真实值时，才使用本节末尾的高级参数。
-
-### locate / env
+### 2. 查 shortcut
 
 ```bash
-server-md locate --json
-server-md env --json
+~/.claude/skills/server-md/server-md shortcut list --tag <tag> --status active --limit 20 --json
 ```
+
+命中候选后查看详情：
+
+```bash
+~/.claude/skills/server-md/server-md shortcut show --category <category> --name <name> --json
+```
+
+### 3. 查 resource / brief
+
+```bash
+~/.claude/skills/server-md/server-md resource list --tag <tag> --status active --limit 20 --json
+```
+
+如果需要聚合某台服务器上的相关资源和 shortcut：
+
+```bash
+~/.claude/skills/server-md/server-md server brief --name <server-or-alias> --tag <tag> --json
+```
+
+### 4. 执行或渲染 shortcut
+
+根据 `risk` / `execute_mode` / `warnings` 决定是否直接运行：
+
+```bash
+~/.claude/skills/server-md/server-md shortcut run --category <category> --name <name> --execute-mode auto --arg key=value --raw --json
+```
+
+- read-only + auto：可直接跑。
+- render/manual：返回命令或按说明操作。
+- medium/high/confirm：先说明影响，等用户确认。
+
+## tag 不确定时：subagent 推荐 tag
+
+需求模糊或 tag 命名不确定时，可以启动一个不继承当前上下文细节的 subagent 做轻量发现。它只需要推荐 tag 和候选 shortcut/resource；主 agent 再继续执行。
+
+推荐 prompt：
+
+```text
+你只能使用 server-md CLI。给定自然需求：“<用户原始需求>”。
+请用少量查询判断应该搜索哪些 tag，以及最可能的 resource/shortcut 名称。
+返回：推荐 tag 列表、命中的 shortcut/resource、是否有歧义。
+```
+
+目标输出形态：
+
+```text
+推荐 tags: <tag1>, <tag2>, <tag3>
+候选 shortcut: <category>/<name>
+候选 resource: <resource-name>
+```
+
+## 常用命令
+
+默认输出会 mask secret-like 字段和值，也会 mask IP/host/command/SSH 指纹等连接目标。Mask 格式为 `__MASKED_TYPE_hash__`，同一真实值在同一 CLI 安装目录内会稳定映射到同一 token，方便判断多行日志是否指向同一对象。`stdout`/`stderr`/`output` 会保留可读日志内容，但会掩码其中的 secret、IP、host 和 SSH 指纹。
 
 ### server
 
@@ -155,14 +183,18 @@ server-md inventory service-set --name <service> --host <host> --unit <unit> --h
 server-md inventory validate --json
 ```
 
-### redact-check
+### 高级命令
 
 ```bash
+server-md locate --json
+server-md env --json
 server-md redact-check <paths...> --json
 server-md redact-check <paths...> --fix --json
 ```
 
-- `--fix` masks detected secret-like values in place.
+- `locate --json`：定位主副本和 sidecar，适用于用户要求查找 SERVER.md、路径异常、迁移或维护 CLI/schema。
+- `env --json`：查看 CLI 运行环境和配置来源，适用于排查环境差异。
+- `redact-check`：发布或同步前做脱敏扫描；`--fix` 会就地改文件。
 - Keep masked output by default.
 
 ### 高级：显示被掩码的真实值
@@ -180,22 +212,25 @@ Mask token 使用稳定格式 `__MASKED_TYPE_hash__`，例如 `__MASKED_HOST_ab1
 
 ## 核心原则
 
-1. **JSON 优先，Markdown 退场**
-   - `server-md.json` 决定主副本、服务器、资源、快捷命令、warnings、tips、constraints。
-   - `SERVER.md` 不保存长命令和细节；事实查询只走 CLI。
+1. **Tag-first，shortcut-first**
+   - 从自然需求先推 1–3 个 tag，优先 `shortcut list --tag ...`。
+   - 普通查询路径是 `shortcut/resource/server brief`；定位、环境和维护路径归入“高级命令”。
 
-2. **一跳够用就停止**
-   - 主副本判断 = `locate --json`。
-   - 服务器上下文 = `server brief --name <name> [--tag <tag>] --json`。
-   - 不要为了“确认一下”再读 Markdown。
+2. **JSON/sidecar 是事实源**
+   - `server-md.json` 决定服务器、资源、快捷命令、warnings、tips、constraints。
+   - 通过 CLI 查询这些事实；Markdown 保持为简短入口和参考索引。
 
-3. **敏感信息和网络地址默认不输出**
+3. **一跳够用就停止**
+   - `shortcut list/show/run` 或 `resource list/show` 返回足够信息时，直接给出结论。
+   - 需要聚合上下文时使用 `server brief --name <name> --tag <tag> --json`。
+
+4. **敏感信息和网络地址默认不输出**
    - 不要输出 token、密码、私钥、SMTP 授权码、完整 Bearer token、完整 cloudflared token、兑换码私钥等。
    - 默认也不要输出 IP、MagicDNS/public host 和连接命令；平时用别名、shortcut、`connect`/`run` 渲染流程承接。
    - 远程命令的 `stdout`/`stderr` 可以保留结论性日志内容，但必须掩码其中的 secret、IP、host 和 SSH 指纹。
    - 命令示例使用环境变量或占位。
 
-4. **危险操作先确认**
+5. **危险操作先确认**
    - 涉及公网、DNS、生产服务、数据、账号状态、删除、重启、token 轮换时，先给计划和影响，不直接执行。
 
 ## 文件结构
