@@ -7,38 +7,48 @@ allowed-tools: Bash
 
 # SERVER.md 运维知识库 Skill
 
-这个 skill 用来通过 `server-md` CLI 查询和维护个人服务器清单、资源和运维快捷命令。常见需求走“需求词 → tag → shortcut/resource → run/show”的短路径；主副本定位、环境排查、schema 维护等场景再使用高级命令。
+这个 skill 用来通过 `server-md` CLI 查询和维护个人服务器清单、资源和运维快捷命令。常见需求走“需求词 → tag → find → show → run/render”的短路径：先用 tag 一次发现候选 shortcut/resource/server，再 show 精确记录，最后按 risk / execute_mode 决定 run、render 或请用户确认。主副本定位、环境排查、schema 维护等场景再使用高级命令。
 
 ## 快速流程
 
 ### 1. 从需求提取候选 tag
 
-从用户原话提取 1–3 个自然 tag；优先用通用词、服务类型、资源类型。
+从用户原话提取 1–3 个自然 tag；优先用通用词、服务类型、资源类型。同义词可以并查，但不要为了“确认一下”全量扫 sidecar。
 
 | 用户说法 | 候选 tag |
 |---|---|
-| X / Twitter / 推文 | `twitter`, `x` |
+| X / Twitter / 推文 / tweets API | `tweet`, `tweets`, `tweets-api`, `twitter`, `x`, `public-api` |
 | 代理 / SOCKS / 转发 | `proxy`, `socks`, `tunnel` |
 | Cloudflare / DNS / tunnel | `cloudflare`, `cloudflared`, `tunnel` |
 | Tailnet / VPN / 节点网络 | `tailnet`, `tailscale`, `headscale` |
 | 数据库 / 备份 / 日志 | `database`, `backup`, `logs` |
 
-### 2. 查 shortcut
+### 2. find：一次发现候选 shortcut/resource/server
 
 ```bash
-~/.claude/skills/server-md/server-md shortcut list --tag <tag> --status active --limit 20 --json
+~/.claude/skills/server-md/server-md find --tag <tag> --limit 20 --json
+~/.claude/skills/server-md/server-md find --tag tweet --tag twitter --tag x --limit 20 --json
 ```
 
-命中候选后查看详情：
+如果只想找可执行入口，限制类型：
+
+```bash
+~/.claude/skills/server-md/server-md find --tag <tag> --type shortcut --limit 20 --json
+```
+
+如果 tag 不确定，用关键词过滤：
+
+```bash
+~/.claude/skills/server-md/server-md find --filter <keyword> --limit 20 --json
+```
+
+### 3. show：查看精确记录
+
+从 `find` 结果中选出最相关的 shortcut/resource 后，先 `show`，再决定是否运行。`show` 用于确认 `description`、`risk`、`execute_mode`、`warnings`、`tips`、`params`。
 
 ```bash
 ~/.claude/skills/server-md/server-md shortcut show --category <category> --name <name> --json
-```
-
-### 3. 查 resource / brief
-
-```bash
-~/.claude/skills/server-md/server-md resource list --tag <tag> --status active --limit 20 --json
+~/.claude/skills/server-md/server-md resource show --name <resource-name> --json
 ```
 
 如果需要聚合某台服务器上的相关资源和 shortcut：
@@ -47,7 +57,7 @@ allowed-tools: Bash
 ~/.claude/skills/server-md/server-md server brief --name <server-or-alias> --tag <tag> --json
 ```
 
-### 4. 执行或渲染 shortcut
+### 4. run/render：执行或渲染 shortcut
 
 根据 `risk` / `execute_mode` / `warnings` 决定是否直接运行：
 
@@ -55,33 +65,50 @@ allowed-tools: Bash
 ~/.claude/skills/server-md/server-md shortcut run --category <category> --name <name> --execute-mode auto --arg key=value --raw --json
 ```
 
-- read-only + auto：可直接跑。
-- render/manual：返回命令或按说明操作。
-- medium/high/confirm：先说明影响，等用户确认。
+- `risk=read-only` 且 `execute_mode=auto`：通常可以直接 `run`。
+- `execute_mode=render/manual`：只渲染命令或按说明操作，不擅自执行远程操作。
+- `risk=medium/high`、`confirm=true`、涉及重启/删除/DNS/生产数据/token 轮换：先说明影响，等待用户确认。
+- 默认不使用 `--reveal`，不输出 token、密码、私钥、完整 host/IP/连接命令。
 
 ## tag 不确定时：subagent 推荐 tag
 
-需求模糊或 tag 命名不确定时，可以启动一个不继承当前上下文细节的 subagent 做轻量发现。它只需要推荐 tag 和候选 shortcut/resource；主 agent 再继续执行。
+需求模糊或 tag 命名不确定时，可以启动一个不继承当前上下文细节的 subagent 做轻量发现。它只需要推荐 tag 和下一步 `show` 的候选，不要完整跑完任务；主 agent 再继续执行。
 
 推荐 prompt：
 
 ```text
-你只能使用 server-md CLI。给定自然需求：“<用户原始需求>”。
-请用少量查询判断应该搜索哪些 tag，以及最可能的 resource/shortcut 名称。
-返回：推荐 tag 列表、命中的 shortcut/resource、是否有歧义。
+你只能使用 server-md CLI，不能使用 --reveal，不能读取 sidecar 原文。
+给定自然需求：“<用户原始需求>”。
+请用少量 `server-md find` 查询判断应该搜索哪些 tag，以及最可能的 resource/shortcut 名称。
+返回：推荐 tag 列表、命中的 shortcut/resource、是否有歧义、建议下一步 show 的精确 category/name 或 resource name。
 ```
 
 目标输出形态：
 
 ```text
 推荐 tags: <tag1>, <tag2>, <tag3>
-候选 shortcut: <category>/<name>
-候选 resource: <resource-name>
+下一步 show shortcut: <category>/<name>
+下一步 show resource: <resource-name>
+歧义: <none|说明>
 ```
 
 ## 常用命令
 
 默认输出会 mask secret-like 字段和值，也会 mask IP/host/command/SSH 指纹等连接目标。Mask 格式为 `__MASKED_TYPE_hash__`，同一真实值在同一 CLI 安装目录内会稳定映射到同一 token，方便判断多行日志是否指向同一对象。`stdout`/`stderr`/`output` 会保留可读日志内容，但会掩码其中的 secret、IP、host 和 SSH 指纹。
+
+### find
+
+```bash
+server-md find --tag <topic> --limit 20 --json
+server-md find --tag <topic> --type shortcut --limit 20 --json
+server-md find --filter <keyword> --limit 20 --json
+server-md find --tag <topic> --type shortcut --type resource --json
+```
+
+Rules:
+- `find` 同时查询 shortcut/resource/server，结果按 shortcut → resource → server 排序。
+- 多个 `--tag` 是 OR 语义；`--type` 可重复，也支持 `shortcut,resource` 逗号分隔。
+- 普通查询先 `find`，命中后 `show` 精确记录；需要单机聚合时才用 `server brief`。
 
 ### server
 
@@ -212,16 +239,18 @@ Mask token 使用稳定格式 `__MASKED_TYPE_hash__`，例如 `__MASKED_HOST_ab1
 
 ## 核心原则
 
-1. **Tag-first，shortcut-first**
-   - 从自然需求先推 1–3 个 tag，优先 `shortcut list --tag ...`。
-   - 普通查询路径是 `shortcut/resource/server brief`；定位、环境和维护路径归入“高级命令”。
+1. **Tag-first，find-first，show-before-run**
+   - 从自然需求先推 1–3 个 tag，优先 `find --tag ...` 一次发现 shortcut/resource/server。
+   - 命中候选后必须 `show` 精确记录，再根据 `risk` / `execute_mode` / `warnings` 决定 `run`、render 或请求确认。
+   - 普通查询路径是 `find → shortcut/resource show → shortcut run/render`；定位、环境和维护路径归入“高级命令”。
 
 2. **JSON/sidecar 是事实源**
    - `server-md.json` 决定服务器、资源、快捷命令、warnings、tips、constraints。
    - 通过 CLI 查询这些事实；Markdown 保持为简短入口和参考索引。
 
 3. **一跳够用就停止**
-   - `shortcut list/show/run` 或 `resource list/show` 返回足够信息时，直接给出结论。
+   - `show` 返回足够信息时，直接给出结论或下一条安全命令。
+   - `run` 只用于已确认的 shortcut；不要为拿 token、host、命令原文而使用 `--reveal`。
    - 需要聚合上下文时使用 `server brief --name <name> --tag <tag> --json`。
 
 4. **敏感信息和网络地址默认不输出**

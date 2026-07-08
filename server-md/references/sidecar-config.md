@@ -82,4 +82,4 @@ Write safety:
 
 ## Query rule
 
-Normal tasks should use one compact CLI query first, especially `locate --json`, `server brief --json`, or `server probe --json` for connectivity diagnostics, and stop when the answer is complete.
+Normal tasks should use one compact CLI find query first, usually `find --tag <topic> --limit 20 --json` or `find --filter <keyword> --limit 20 --json`, then `show` the exact candidate before `run` or reporting details. Use `server brief --json` for per-server aggregation, `locate --json` for canonical path issues, and `server probe --json` for connectivity diagnostics.

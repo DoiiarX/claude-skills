@@ -183,7 +183,7 @@ done
 Manage a private server inventory through a compact `server-md.json` sidecar. The bundled CLI answers canonical-location, server, resource, and shortcut questions without reading long Markdown notes.
 
 **Features:**
-- Compact `locate`, `server brief`, `server probe`, `resource list`, and `shortcut list` commands
+- Compact `find`, `locate`, `server brief`, `server probe`, `resource list`, and `shortcut list` commands
 - Server aliases, lifecycle status, traffic role, resource metadata, tags, warnings, tips, and constraints
 - Head/tail-style limiting through `--limit` and `--tail`
 - Render-only operational shortcuts by default
@@ -196,14 +196,13 @@ npx skills add DoiiarX/claude-skills@server-md
 
 **Quick start:**
 ```bash
-server-md locate --json
+server-md find --tag web --status active --limit 20 --json
+server-md find --tag web --type shortcut --type resource --json
 server-md server brief --name prod --tag web --status active --limit 20 --json
 server-md server probe --name prod --json
-server-md resource list --server prod --tag web --status active --limit 20 --json
-server-md shortcut list --server prod --tag web --status active --limit 20 --json
 
 # Inspect the bundled sanitized sidecar example
-server-md server brief --sidecar ~/.claude/skills/server-md/examples/server-md.example.json --name prod --tag web --status active --json
+server-md find --sidecar ~/.claude/skills/server-md/examples/server-md.example.json --tag web --status active --json
 ```
 
 ---

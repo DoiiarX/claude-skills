@@ -646,6 +646,13 @@ def limit_items(items: list[Any], limit: int = 20, tail: bool = False) -> dict[s
     }
 
 
+def filter_tags(items: list[dict[str, Any]], tags: list[str] | None) -> list[dict[str, Any]]:
+    if not tags:
+        return items
+    wanted = set(tags)
+    return [item for item in items if wanted & set(item.get("tags", []))]
+
+
 def filter_items(items: list[dict[str, Any]], query: str | None) -> list[dict[str, Any]]:
     if not query:
         return items
@@ -659,6 +666,63 @@ def filter_state(items: list[dict[str, Any]], status: str | None = None, traffic
     if traffic_role:
         items = [item for item in items if item.get("traffic_role") == traffic_role]
     return items
+
+
+FIND_TYPE_ALIASES = {
+    "shortcut": "shortcut",
+    "shortcuts": "shortcut",
+    "resource": "resource",
+    "resources": "resource",
+    "server": "server",
+    "servers": "server",
+}
+DEFAULT_FIND_TYPES = ["shortcut", "resource", "server"]
+
+
+def parse_find_types(raw: list[str] | None) -> list[str]:
+    if not raw:
+        return DEFAULT_FIND_TYPES.copy()
+    result: list[str] = []
+    for item in raw:
+        for part in str(item).split(","):
+            value = part.strip().lower()
+            if not value:
+                continue
+            canonical = FIND_TYPE_ALIASES.get(value)
+            if not canonical:
+                valid = ", ".join(DEFAULT_FIND_TYPES)
+                raise SystemExit(f"Invalid find type: {part}. Valid types: {valid}.")
+            if canonical not in result:
+                result.append(canonical)
+    return result or DEFAULT_FIND_TYPES.copy()
+
+
+def apply_common_filters(
+    items: list[dict[str, Any]],
+    tags: list[str] | None,
+    status: str | None,
+    traffic_role: str | None,
+    query: str | None,
+) -> list[dict[str, Any]]:
+    items = filter_tags(items, tags)
+    items = filter_state(items, status, traffic_role)
+    return filter_items(items, query)
+
+
+FIND_TYPE_ORDER = {"shortcut": 0, "resource": 1, "server": 2}
+FIND_STATUS_ORDER = {"active": 0, "staging": 1, "unknown": 2, "deprecated": 3, "retired": 4, "disabled": 5}
+FIND_TRAFFIC_ORDER = {"primary": 0, "secondary": 1, "staging": 2, "none": 3}
+
+
+def sort_find_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    indexed = list(enumerate(items))
+    indexed.sort(key=lambda pair: (
+        FIND_TYPE_ORDER.get(str(pair[1].get("type", "")), 99),
+        FIND_STATUS_ORDER.get(str(pair[1].get("status", "unknown")), 2),
+        FIND_TRAFFIC_ORDER.get(str(pair[1].get("traffic_role", "none")), 3),
+        pair[0],
+    ))
+    return [item for _idx, item in indexed]
 
 
 def run_probe(label: str, command: list[str], timeout: int) -> dict[str, Any]:
@@ -820,6 +884,45 @@ def cmd_inventory_validate(args: argparse.Namespace) -> None:
     emit(result, args.json)
     if errors:
         sys.exit(1)
+
+
+def cmd_find(args: argparse.Namespace) -> None:
+    path = resolve_sidecar_path(args.sidecar)
+    data = load_sidecar_path(path)
+    types = parse_find_types(args.type)
+    counts = {"shortcut": 0, "resource": 0, "server": 0}
+    items: list[dict[str, Any]] = []
+
+    if "shortcut" in types:
+        rows = [{"type": "shortcut", **row} for row in flatten_shortcuts(data)]
+        rows = apply_common_filters(rows, args.tag, args.status, args.traffic_role, args.filter)
+        counts["shortcut"] = len(rows)
+        items.extend(rows)
+    if "resource" in types:
+        rows = [{"type": "resource", **row} for row in flatten_resources(data)]
+        rows = apply_common_filters(rows, args.tag, args.status, args.traffic_role, args.filter)
+        counts["resource"] = len(rows)
+        items.extend(rows)
+    if "server" in types:
+        rows = [{"type": "server", **row} for row in flatten_servers(data)]
+        rows = apply_common_filters(rows, args.tag, args.status, args.traffic_role, args.filter)
+        counts["server"] = len(rows)
+        items.extend(rows)
+
+    emit({
+        "sidecar": str(path),
+        "query": {
+            "tags": args.tag or [],
+            "filter": args.filter,
+            "status": args.status,
+            "traffic_role": args.traffic_role,
+            "types": types,
+        },
+        "counts": counts,
+        "results": limit_items(sort_find_items(items), args.limit, args.tail),
+    }, args.json)
+
+
 def cmd_server_brief(args: argparse.Namespace) -> None:
     path = resolve_sidecar_path(args.sidecar)
     data = load_sidecar_path(path)
@@ -1827,6 +1930,7 @@ TODO
 
 COMMAND_TREE = {
     "locate": [],
+    "find": [],
     "env": [],
     "redact-check": [],
     "init": [],
@@ -1904,6 +2008,16 @@ def build_parser() -> argparse.ArgumentParser:
     locate.add_argument("--verbose", action="store_true", help="Include all candidates and sidecar details.")
     locate.add_argument("--json", action="store_true", help="Emit JSON.")
     locate.set_defaults(func=cmd_locate)
+
+    find = sub.add_parser("find", help="Find matching shortcuts, resources, and servers in one query.")
+    find.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
+    find.add_argument("--tag", action="append", help="Filter by tag; repeatable.")
+    find.add_argument("--filter", help="Case-insensitive substring filter across records.")
+    find.add_argument("--type", action="append", help="Record type to include: shortcut, resource, server; repeatable or comma-separated.")
+    add_state_filter_args(find)
+    add_limit_args(find)
+    find.add_argument("--json", action="store_true", help="Emit JSON.")
+    find.set_defaults(func=cmd_find)
 
     env = sub.add_parser("env", help="Describe current host environment.")
     env.add_argument("--json", action="store_true", help="Emit JSON.")

@@ -4,10 +4,20 @@ Use this only when maintaining the skill or refining safety behavior. Normal loo
 
 ## Default flow
 
-1. Query structured data with `server-md server brief --name <alias> --tag <topic> --json`.
-2. Prefer registered read-only shortcuts for health, status, and logs.
-3. For connectivity problems, run `server-md server probe --name <alias> --json` first; add `--ssh` only when an SSH handshake is needed.
-4. For destructive or production-affecting operations, present a plan and wait for explicit confirmation.
+1. For normal user intent, start with a compact find query:
+   ```bash
+   server-md find --tag <topic> --limit 20 --json
+   server-md find --filter <keyword> --limit 20 --json
+   ```
+2. Show the exact candidate before acting:
+   ```bash
+   server-md shortcut show --category <category> --name <name> --json
+   server-md resource show --name <resource-name> --json
+   ```
+3. Run only registered shortcuts, and only according to `risk`, `execute_mode`, `warnings`, and user authorization.
+4. Use `server-md server brief --name <alias> --tag <topic> --json` only when the user needs per-server aggregation.
+5. For connectivity problems, run `server-md server probe --name <alias> --json` first; add `--ssh` only when an SSH handshake is needed.
+6. For destructive or production-affecting operations, present a plan and wait for explicit confirmation.
 
 ## Connectivity probes
 
