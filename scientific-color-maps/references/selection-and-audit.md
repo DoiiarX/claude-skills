@@ -2,6 +2,18 @@
 
 Use this reference to turn the principles in `SKILL.md` into a concrete palette decision or figure review.
 
+## Contents
+
+- Decision table
+- Selection procedure
+- Hue-change decision test
+- Normalization rules
+- Audit checklist
+- Common findings and fixes
+- Probability bar pattern
+- Implementation patterns
+- Source basis
+
 ## Decision Table
 
 | Data semantics and display role | Map class | Required property | Common choices |
@@ -103,6 +115,8 @@ The presence of hue variation is neither automatically scientific nor automatica
 | Probability or progress bars jump from blue to amber to green | Unrelated hues imply categorical states even when the value is continuous | Keep bar length or height primary and use a single-hue light-to-dark ramp |
 | Arbitrary low, medium, and high bands | Visual boundaries imply real thresholds and actions that may not exist | Use a continuous sequential scale or define and label genuine operational thresholds |
 | Multi-hue palette reinforces a value already encoded by position or length | Adds visual complexity without new information | Reduce color to a single hue or neutral-to-accent emphasis |
+| Decorative directional gradient inside a quantitative mark | Can alter perceived weight or stability independently of the value | Use a uniform fill or make the gradient an explicit calibrated scale |
+| Same color changes meaning across related figures | Forces relearning and creates semantic ambiguity | Maintain a shared palette registry and stable meaning-to-color mapping |
 
 ## Probability Bar Pattern
 
@@ -123,10 +137,10 @@ Example CSS structure:
 .probability-2 { background: #8dd2c7; }
 .probability-3 { background: #62c0b1; }
 .probability-4 { background: #36ad9a; }
-.probability-5 { background: #087d70; }
+.probability-5 { background: #1b9283; }
 ```
 
-Treat these hex values as an illustrative ordered ramp, not a universal palette. Validate contrast and lightness in the actual interface.
+Treat these hex values as an illustrative ordered ramp, not a universal palette. The bundled audit reports monotonic lightness and relatively even adjacent CIE76 steps for this sample, but contrast, CVD behavior, and final-render context still require validation.
 
 ## Implementation Patterns
 

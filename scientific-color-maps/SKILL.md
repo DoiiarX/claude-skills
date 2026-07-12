@@ -14,11 +14,14 @@ Treat color as a quantitative axis, not decoration. Preserve the structure of th
 3. Classify the variable and select the matching map class.
 4. Decide whether hue changes have a defensible semantic or perceptual purpose.
 5. Choose a documented perceptually uniform palette.
-6. Implement the scale, normalization, limits, and color bar together.
-7. Validate the result under grayscale, color-vision simulation, and the final background.
-8. Report the exact palette and mapping decisions when reproducibility matters.
+6. Separate direct visualization evidence from adjacent color-psychology evidence.
+7. Implement the scale, normalization, limits, and color bar together.
+8. Validate the result under grayscale, color-vision simulation, and the final background.
+9. Report the exact palette and mapping decisions when reproducibility matters.
 
 Read [references/selection-and-audit.md](references/selection-and-audit.md) when selecting among map classes, auditing an existing figure, or needing implementation guidance.
+
+Read [references/evidence-and-tools.md](references/evidence-and-tools.md) when applying visual-weight research, standardizing colors across figures, evaluating evidence strength, or deciding which validation tools to use.
 
 ## Classify the Data
 
@@ -43,6 +46,21 @@ Do not interpret “different values need different colors” as permission to a
 
 For compact probability bars, progress bars, meters, ranked bars, and sparklines, default to a single-hue ordered ramp when bar height or length already expresses magnitude. Do not map arbitrary low, medium, and high bands to blue, amber, and green unless those bands are established operational states with documented thresholds and actions.
 
+## Respect Evidence Scope
+
+- Give direct scientific-visualization evidence priority for quantitative encoding decisions.
+- Use product, marketing, and object-perception studies only to identify possible salience, weight, size, or stability biases. Do not turn them into universal hue rankings or quantitative palette prescriptions.
+- Keep decorative and editorial goals separate from data encoding. A color treatment that makes a cover, card, or product feel stable can still bias a chart.
+- Avoid directional decorative gradients inside bars, areas, nodes, and other quantitative marks. A bottom-dark/top-light gradient can alter perceived weight or stability independently of the encoded value.
+- Do not state that warm colors are always heavier, red is always heaviest, or yellow is always lightest. Lightness, saturation, area, position, background, culture, and task interact.
+
+## Preserve Semantic Consistency
+
+- Keep the same entity, category, state, and reference value mapped to the same color across related figures.
+- Maintain a palette registry when a report, dashboard, paper, or product contains multiple views.
+- Do not reuse one color for incompatible meanings such as “high risk” in one figure and an ordinary category in another.
+- Record palette name and version, exact samples, normalization, limits, center, missing-data treatment, and background when reproducibility matters.
+
 ## Preserve Data Meaning
 
 - Prefer palettes with approximately uniform perceptual change along the scale and a monotonic lightness path where the class permits it.
@@ -66,6 +84,19 @@ Start with maintained, documented families rather than inventing a palette:
 - CET palettes: broad coverage, but verify the specific palette because quality varies across the collection.
 
 Match the palette to the data semantics; a reputable palette from the wrong class is still misleading.
+
+For unordered categories, consider an established color-universal-design palette such as Okabe-Ito as a starting point, then validate it at the actual mark size and background. Do not treat any categorical palette as universally safe.
+
+## Use the Bundled Audit Tool
+
+Run `scripts/audit_palette.py` when exact palette samples are available:
+
+```bash
+python3 scripts/audit_palette.py --class sequential \
+  '#b8e3dc' '#8dd2c7' '#62c0b1' '#36ad9a' '#1b9283'
+```
+
+Use `--json` for machine-readable output. Treat the report as a screening diagnostic, not certification: it measures CIELAB lightness, CIE76 color differences, grayscale spacing, and class-specific structural checks, but it does not model viewing environment, simultaneous contrast, or color-vision deficiency.
 
 ## Validate Before Delivery
 
