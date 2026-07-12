@@ -213,6 +213,7 @@ Choose, implement, and audit scientifically accurate color maps without distorti
 
 **Features:**
 - Select sequential, diverging, cyclic, categorical, or discrete maps from data semantics
+- Decide whether hue changes carry real meaning or merely decorate an existing length, height, or position encoding
 - Replace rainbow, jet, turbo, and inaccessible red-green scales
 - Check perceptual uniformity, grayscale readability, and color-vision accessibility
 - Validate normalization, meaningful centers, limits, clipping, missing data, and color bars

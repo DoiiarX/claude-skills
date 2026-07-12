@@ -4,12 +4,14 @@ Use this reference to turn the principles in `SKILL.md` into a concrete palette 
 
 ## Decision Table
 
-| Data semantics | Map class | Required property | Common choices |
+| Data semantics and display role | Map class | Required property | Common choices |
 |---|---|---|---|
-| Magnitude, concentration, probability, elevation | Sequential | Ordered, preferably monotonic lightness | `viridis`, `cividis`, `magma`, `batlow`, suitable cmocean map |
+| Magnitude shown primarily by color in a heatmap, image, or map | Sequential | Ordered, preferably monotonic lightness; hue variation may assist range discrimination | `viridis`, `cividis`, `magma`, `batlow`, suitable cmocean map |
+| Magnitude already shown by bar length, height, position, or label | Single-hue sequential reinforcement | Fixed hue with monotonic lightness or saturation; color remains secondary | One accessible brand hue sampled from light to dark |
 | Signed anomaly around a meaningful baseline | Diverging | Two ordered arms meeting at the true baseline | `vik`, `broc`, cmocean `balance`, ColorBrewer diverging maps |
 | Direction, phase, orientation, time of day | Cyclic | Endpoints meet without a seam | `romaO`, `twilight`, cmocean `phase` |
 | Unordered classes | Categorical | Distinct colors with comparable visual weight | ColorBrewer qualitative maps, categorical Scientific Colour Maps |
+| Named operational states with real thresholds and actions | Discrete categorical or ordered states | Thresholds documented and labels visible | Accessible state colors plus text or icon reinforcement |
 | Ordered bins | Discrete sequential or diverging | Ordered bins and visible boundaries | Sample a validated continuous map at equal intervals |
 
 Palette names are starting points, not universal answers. Verify availability, version, license, background behavior, and suitability for the exact data range.
@@ -18,12 +20,32 @@ Palette names are starting points, not universal answers. Verify availability, v
 
 1. Identify whether the variable is continuous, ordinal, categorical, or periodic.
 2. Identify whether a reference value has domain meaning.
-3. Decide whether viewers must estimate values, detect local variation, compare regions, or find threshold crossings.
-4. Choose a map class from the decision table.
-5. Choose a documented palette in that class.
-6. Set normalization and limits from the analysis, not from aesthetics.
-7. Render with the actual data, output size, background, overlays, and color bar.
-8. Run accessibility and distortion checks.
+3. Identify the primary visual channel: color, position, length, height, area, shape, or text.
+4. Decide whether viewers must estimate values, detect local variation, compare regions, or find threshold crossings.
+5. Require an explicit reason for every hue change: category identity, real threshold state, diverging direction, cyclic position, or improved perception in a color-primary field.
+6. Choose a map class from the decision table.
+7. Choose a documented palette in that class.
+8. Set normalization and limits from the analysis, not from aesthetics.
+9. Render with the actual data, output size, background, overlays, and color bar.
+10. Run accessibility and distortion checks.
+
+## Hue-Change Decision Test
+
+Ask these questions in order:
+
+1. Is the value already encoded by position, bar length, bar height, or a direct label?
+   - Yes: start with one hue and monotonic lightness. Add hue variation only for a separate meaningful variable or state.
+2. Does a color boundary correspond to a named threshold with a different action?
+   - Yes: discrete state colors are defensible if the thresholds and labels are visible.
+   - No: do not invent low, medium, and high hues; preserve a continuous ramp.
+3. Does the variable have two meaningful directions around a center?
+   - Yes: use a diverging map centered on that value.
+4. Is the variable periodic?
+   - Yes: use a cyclic map.
+5. Is color the primary way to read a dense continuous field?
+   - Yes: a perceptually uniform multi-hue sequential map is acceptable when it improves discrimination and retains ordered lightness.
+
+The presence of hue variation is neither automatically scientific nor automatically unscientific. Its validity depends on data semantics, perceptual uniformity, and whether another visual channel already communicates the same magnitude more clearly.
 
 ## Normalization Rules
 
@@ -49,6 +71,8 @@ Palette names are starting points, not universal answers. Verify availability, v
 - Does lightness progress monotonically for sequential data?
 - Are there artificial bright or dark bands that create false boundaries?
 - Have validated palette segments been stretched, clipped, or concatenated?
+- Is color primary or redundant, and is the palette complexity appropriate for that role?
+- Does every hue transition correspond to real semantics or a justified perceptual benefit?
 
 ### Accessibility
 
@@ -76,6 +100,33 @@ Palette names are starting points, not universal answers. Verify availability, v
 | Missing color bar | Prevents quantitative interpretation | Add labeled color bar with units and transformation |
 | Palette doubles as missing-data color | Makes absence look like a measured extreme | Assign a separate neutral or patterned missing-data treatment |
 | Directly touching heatmap cells are hard to compare | Simultaneous contrast can shift perceived colors | Add subtle separation when appropriate and verify at final size |
+| Probability or progress bars jump from blue to amber to green | Unrelated hues imply categorical states even when the value is continuous | Keep bar length or height primary and use a single-hue light-to-dark ramp |
+| Arbitrary low, medium, and high bands | Visual boundaries imply real thresholds and actions that may not exist | Use a continuous sequential scale or define and label genuine operational thresholds |
+| Multi-hue palette reinforces a value already encoded by position or length | Adds visual complexity without new information | Reduce color to a single hue or neutral-to-accent emphasis |
+
+## Probability Bar Pattern
+
+For a probability bar whose height or width already maps `0–100%`:
+
+- Use bar geometry as the primary quantitative channel.
+- Use one hue with ordered lightness as secondary reinforcement.
+- Render `0%` as an empty neutral track rather than a colored minimum bar.
+- Keep missing or unavailable data distinct from `0%`, for example with a pattern, icon, or explicit label.
+- Avoid arbitrary blue/amber/green bands unless they represent documented operational states such as “ignore,” “review,” and “act,” each with explicit thresholds.
+- If operational states exist, preserve the numeric bar and add a labeled badge or marker; do not rely on hue alone.
+
+Example CSS structure:
+
+```css
+.probability-track { background: #e7edef; }
+.probability-1 { background: #b8e3dc; }
+.probability-2 { background: #8dd2c7; }
+.probability-3 { background: #62c0b1; }
+.probability-4 { background: #36ad9a; }
+.probability-5 { background: #087d70; }
+```
+
+Treat these hex values as an illustrative ordered ramp, not a universal palette. Validate contrast and lightness in the actual interface.
 
 ## Implementation Patterns
 
