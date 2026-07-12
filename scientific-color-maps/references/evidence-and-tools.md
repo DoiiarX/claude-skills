@@ -68,6 +68,30 @@ Use `scripts/audit_palette.py` for deterministic first-pass analysis of exact co
 - minimum pairwise separation for categorical maps;
 - warnings about weak grayscale spacing and uneven perceptual steps.
 
+The CLI is non-interactive and agent-oriented:
+
+```bash
+# Discover commands, then inspect only the relevant subcommand.
+python3 scripts/audit_palette.py
+python3 scripts/audit_palette.py audit --help
+
+# Pass colors directly.
+python3 scripts/audit_palette.py audit --class sequential \
+  '#f7fcf0' '#74c476' '#00441b'
+
+# Compose with pipelines and emit stable JSON.
+printf '#f7fcf0\n#74c476\n#00441b\n' | \
+  python3 scripts/audit_palette.py audit --class sequential --stdin --format json
+
+# Make screening warnings visible to CI or another agent through exit code 1.
+python3 scripts/audit_palette.py audit --class sequential \
+  --file palette.css --warnings-as-errors
+```
+
+Missing or conflicting inputs fail immediately with a valid example invocation. The report includes `schema_version`, tool version, status, warnings, and metrics. The command is read-only and safe to retry.
+
+The command shape follows the agent-oriented principles in Cursor's [CLI for agents](https://github.com/cursor/plugins/blob/main/cli-for-agent/skills/cli-for-agents/SKILL.md): non-interactive inputs, layered help, copy-pasteable examples, stdin composition, actionable errors, safe retries, stable structured output, and meaningful exit codes.
+
 ### Use externally when available
 
 - Use `colorspacious`, `colour-science`, or equivalent maintained libraries for CIEDE2000, appearance models, and color-vision-deficiency simulation.

@@ -92,11 +92,11 @@ For unordered categories, consider an established color-universal-design palette
 Run `scripts/audit_palette.py` when exact palette samples are available:
 
 ```bash
-python3 scripts/audit_palette.py --class sequential \
+python3 scripts/audit_palette.py audit --class sequential \
   '#b8e3dc' '#8dd2c7' '#62c0b1' '#36ad9a' '#1b9283'
 ```
 
-Use `--json` for machine-readable output. Treat the report as a screening diagnostic, not certification: it measures CIELAB lightness, CIE76 color differences, grayscale spacing, and class-specific structural checks, but it does not model viewing environment, simultaneous contrast, or color-vision deficiency.
+Discover usage incrementally with `python3 scripts/audit_palette.py` and `python3 scripts/audit_palette.py audit --help`. Use `--format json` for stable machine-readable output, `--stdin` in pipelines, and `--warnings-as-errors` for CI-style screening. Treat the report as a screening diagnostic, not certification: it measures CIELAB lightness, CIE76 color differences, grayscale spacing, and class-specific structural checks, but it does not model viewing environment, simultaneous contrast, or color-vision deficiency.
 
 ## Validate Before Delivery
 

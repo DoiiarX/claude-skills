@@ -219,7 +219,7 @@ Choose, implement, and audit scientifically accurate color maps without distorti
 - Validate normalization, meaningful centers, limits, clipping, missing data, and color bars
 - Apply practical guidance for Matplotlib, ggplot2, and JavaScript visualization libraries
 - Distinguish definite visual defects from risks that require source palette analysis
-- Screen exact palette samples with a zero-dependency CIELAB audit tool
+- Screen exact palette samples with a pipeline-friendly, JSON-capable CIELAB audit CLI
 
 **Install:**
 ```bash

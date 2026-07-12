@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Screen a color palette for basic perceptual structure using only stdlib."""
+"""Agent-friendly CLI for screening color palettes using only Python stdlib."""
 
 from __future__ import annotations
 
@@ -12,6 +12,24 @@ import sys
 from pathlib import Path
 
 HEX_RE = re.compile(r"#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})(?![0-9a-fA-F])")
+VERSION = "1.1.0"
+
+
+class AgentArgumentParser(argparse.ArgumentParser):
+    """Argument parser that adds copy-pasteable examples to actionable errors."""
+
+    def __init__(self, *args: object, examples: tuple[str, ...] = (), **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.examples = examples
+
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        if self.examples:
+            print("Examples:", file=sys.stderr)
+            for example in self.examples:
+                print(f"  {example}", file=sys.stderr)
+        self.exit(2)
 
 
 def parse_color(value: str) -> tuple[str, tuple[float, float, float]]:
@@ -69,16 +87,36 @@ def rounded(values: list[float]) -> list[float]:
     return [round(value, 3) for value in values]
 
 
-def load_colors(arguments: argparse.Namespace) -> list[str]:
-    tokens = list(arguments.colors)
-    if arguments.file:
-        tokens.extend(HEX_RE.findall(Path(arguments.file).read_text(encoding="utf-8")))
+def extract_colors(text: str) -> list[str]:
+    matches = HEX_RE.findall(text)
+    if matches:
+        return matches
+    return [part for part in re.split(r"[\s,]+", text) if part]
+
+
+def load_colors(arguments: argparse.Namespace, parser: AgentArgumentParser) -> list[str]:
+    sources = sum((bool(arguments.colors), bool(arguments.file), bool(arguments.stdin)))
+    if sources == 0:
+        parser.error("no colors provided; pass hex colors, --file <path>, or --stdin")
+    if sources > 1:
+        parser.error("choose exactly one input source: positional colors, --file, or --stdin")
+
+    if arguments.stdin or arguments.file == "-":
+        source_text = sys.stdin.read()
+        if not source_text.strip():
+            parser.error("stdin was empty")
+        tokens = extract_colors(source_text)
+    elif arguments.file:
+        tokens = extract_colors(Path(arguments.file).read_text(encoding="utf-8"))
+    else:
+        tokens = list(arguments.colors)
+
     expanded: list[str] = []
     for token in tokens:
         matches = HEX_RE.findall(token)
         expanded.extend(matches if matches else [part for part in token.split(",") if part.strip()])
     if len(expanded) < 2:
-        raise ValueError("provide at least two colors")
+        parser.error("provide at least two colors")
     return expanded
 
 
@@ -128,7 +166,12 @@ def audit(colors: list[str], palette_class: str) -> dict[str, object]:
         if min(pairwise) < 10:
             warnings.append("categorical palette contains a weakly separated pair (Delta E76 < 10)")
 
+    status = "warnings" if warnings else "pass"
     return {
+        "schema_version": "1.0",
+        "tool": "audit_palette",
+        "tool_version": VERSION,
+        "status": status,
         "palette_class": palette_class,
         "colors": canonical,
         "sample_count": len(canonical),
@@ -144,6 +187,7 @@ def audit(colors: list[str], palette_class: str) -> dict[str, object]:
 
 
 def print_text(report: dict[str, object]) -> None:
+    print(f"status: {report['status']}")
     print(f"class: {report['palette_class']}")
     print(f"colors: {', '.join(report['colors'])}")
     print(f"L*: {report['lab_lightness']}")
@@ -161,28 +205,87 @@ def print_text(report: dict[str, object]) -> None:
     print(f"scope: {report['scope']}")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("colors", nargs="*", help="Hex colors, individually or comma-separated")
-    parser.add_argument("--file", help="Read and extract hex colors from a UTF-8 text file")
-    parser.add_argument(
+def build_parser() -> tuple[AgentArgumentParser, AgentArgumentParser]:
+    parser = AgentArgumentParser(
+        description="Screen color palettes for basic perceptual structure.",
+        examples=(
+            "python3 scripts/audit_palette.py audit --help",
+            "python3 scripts/audit_palette.py --version",
+        ),
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    commands = parser.add_subparsers(dest="command", metavar="COMMAND", title="commands")
+
+    examples = (
+        "python3 scripts/audit_palette.py audit --class sequential '#f7fcf0' '#74c476' '#00441b'",
+        "python3 scripts/audit_palette.py audit --class diverging --file palette.css --format json",
+        "printf '#f7fcf0\\n#74c476\\n#00441b\\n' | python3 scripts/audit_palette.py audit --class sequential --stdin",
+        "python3 scripts/audit_palette.py audit --class sequential --file palette.txt --warnings-as-errors",
+    )
+    audit_parser = commands.add_parser(
+        "audit",
+        help="audit exact palette samples",
+        description="Audit exact palette samples from arguments, a UTF-8 file, or stdin.",
+        epilog="Examples:\n  " + "\n  ".join(examples),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        examples=examples,
+    )
+    audit_parser.add_argument("colors", nargs="*", help="Hex colors, individually or comma-separated")
+    audit_parser.add_argument("--file", metavar="PATH", help="extract hex colors from a UTF-8 text file; use - for stdin")
+    audit_parser.add_argument("--stdin", action="store_true", help="read colors from stdin")
+    audit_parser.add_argument(
         "--class",
         dest="palette_class",
         choices=("sequential", "diverging", "cyclic", "categorical"),
         required=True,
         help="Intended palette class",
     )
-    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    arguments = parser.parse_args()
+    audit_parser.add_argument(
+        "--format",
+        dest="output_format",
+        choices=("text", "json"),
+        default="text",
+        help="output format (default: text)",
+    )
+    audit_parser.add_argument(
+        "--json",
+        dest="output_format",
+        action="store_const",
+        const="json",
+        help="alias for --format json",
+    )
+    audit_parser.add_argument(
+        "--warnings-as-errors",
+        action="store_true",
+        help="exit 1 after emitting a report when screening warnings exist",
+    )
+    return parser, audit_parser
+
+
+def normalize_legacy_args(arguments: list[str]) -> list[str]:
+    if not arguments or arguments[0] in {"audit", "-h", "--help", "--version"}:
+        return arguments
+    return ["audit", *arguments]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser, audit_parser = build_parser()
+    normalized = normalize_legacy_args(list(sys.argv[1:] if argv is None else argv))
+    if not normalized:
+        parser.print_help()
+        return 0
+    arguments = parser.parse_args(normalized)
+    if arguments.command != "audit":
+        parser.error("choose a command")
     try:
-        report = audit(load_colors(arguments), arguments.palette_class)
+        report = audit(load_colors(arguments, audit_parser), arguments.palette_class)
     except (OSError, ValueError) as error:
-        parser.error(str(error))
-    if arguments.json:
+        audit_parser.error(str(error))
+    if arguments.output_format == "json":
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         print_text(report)
-    return 0
+    return 1 if arguments.warnings_as_errors and report["warnings"] else 0
 
 
 if __name__ == "__main__":
