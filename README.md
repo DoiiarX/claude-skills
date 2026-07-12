@@ -207,6 +207,34 @@ server-md find --sidecar ~/.claude/skills/server-md/examples/server-md.example.j
 
 ---
 
+### [scientific-color-maps](./scientific-color-maps/)
+
+Choose, implement, and audit scientifically accurate color maps without distorting the underlying data.
+
+**Features:**
+- Select sequential, diverging, cyclic, categorical, or discrete maps from data semantics
+- Replace rainbow, jet, turbo, and inaccessible red-green scales
+- Check perceptual uniformity, grayscale readability, and color-vision accessibility
+- Validate normalization, meaningful centers, limits, clipping, missing data, and color bars
+- Apply practical guidance for Matplotlib, ggplot2, and JavaScript visualization libraries
+- Distinguish definite visual defects from risks that require source palette analysis
+
+**Install:**
+```bash
+npx skills add DoiiarX/claude-skills@scientific-color-maps
+```
+
+**Quick start:**
+```text
+Use $scientific-color-maps to choose a palette for this temperature heatmap.
+Audit this figure for misleading color mapping and color-vision accessibility.
+Replace the jet colormap in this Matplotlib plot without changing its data semantics.
+```
+
+Based on Crameri, Shephard, and Heron, ["The misuse of colour in science communication"](https://doi.org/10.1038/s41467-020-19160-7) (Nature Communications, 2020).
+
+---
+
 ## Installation
 
 Skills are installed via the [Skills CLI](https://skills.sh/):

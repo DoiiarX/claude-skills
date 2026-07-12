@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scientific Color Maps"
+  short_description: "Choose and audit accurate, accessible scientific colors"
+  default_prompt: "Use $scientific-color-maps to select and validate a color map for this visualization."
