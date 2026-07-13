@@ -157,8 +157,9 @@ def strengthen_semantic_cores(
 ) -> Image.Image:
     if not config:
         return image.copy()
-    sizes = {int(value) for value in config.get("sizes", [16, 24, 32, 48])}
-    if size not in sizes:
+    reference_sizes = [int(value) for value in config.get("sizes", [16, 24, 32, 48])]
+    max_size = int(config.get("max_size", max(reference_sizes)))
+    if size > max_size:
         return image.copy()
     anchors = [
         (entry["name"], parse_color(entry["color"]))
@@ -200,9 +201,21 @@ def strengthen_semantic_cores(
 
 def _size_value(config: dict[str, Any], key: str, size: int) -> Any:
     values = config.get(key)
-    if not isinstance(values, dict) or str(size) not in values:
-        raise ValueError(f"strengthen.{key} has no value for {size}px")
-    return values[str(size)]
+    if not isinstance(values, dict) or not values:
+        raise ValueError(f"strengthen.{key} must be a non-empty size map")
+    points = sorted((int(point), float(value)) for point, value in values.items())
+    for point, value in points:
+        if size == point:
+            return value
+    if size <= points[0][0]:
+        return points[0][1]
+    if size >= points[-1][0]:
+        return points[-1][1]
+    for (left_size, left_value), (right_size, right_value) in zip(points, points[1:]):
+        if left_size < size < right_size:
+            progress = (size - left_size) / (right_size - left_size)
+            return left_value + (right_value - left_value) * progress
+    raise ValueError(f"could not interpolate strengthen.{key} for {size}px")
 
 
 def apply_chroma_matte(
@@ -588,6 +601,7 @@ class IconPipeline:
         crop = recipe.get("crop")
         self.source = source.convert("RGB").crop(tuple(crop)) if crop else source.convert("RGB")
         self.small_sizes = {int(size) for size in recipe.get("small_sizes", [16, 24, 32, 48])}
+        self.small_size_max = recipe.get("small_size_max")
         self.projection_resampler = self._make_projection_resampler()
         self.core_inheritor = self._make_core_inheritor()
 
@@ -614,7 +628,10 @@ class IconPipeline:
     def render(self, size: int) -> tuple[Image.Image, list[dict[str, Any]]]:
         image = render_base(self.source, size, self.recipe)
         image = strengthen_semantic_cores(image, size, self.recipe.get("strengthen"))
-        if size not in self.small_sizes:
+        optimize_small = size in self.small_sizes or (
+            self.small_size_max is not None and size <= int(self.small_size_max)
+        )
+        if not optimize_small:
             return image, []
         for layer in self.recipe.get("chroma_mattes", []):
             image = apply_chroma_matte(self.source, image, size, layer, self.background)

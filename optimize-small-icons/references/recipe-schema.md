@@ -9,6 +9,7 @@ The CLI accepts a JSON object. Keep exact anchor colors in `#RRGGBB` form.
 | `strategy` | Internal algorithm name; currently `core-inheritance-v4`. |
 | `sizes` | ICO frame sizes. Default: `16,24,32,48,64,128,256`. |
 | `small_sizes` | Sizes that receive matte and inheritance passes. |
+| `small_size_max` | Optional inclusive threshold that optimizes arbitrary small sizes such as 20, 29, 30, 36, 40, and 44px. |
 | `crop` | Optional Pillow crop box: `[left, top, right, bottom]`. |
 | `background` | Exact semantic background anchor. |
 | `preview_background` | Dark preview canvas color. |
@@ -27,6 +28,7 @@ The CLI accepts a JSON object. Keep exact anchor colors in `#RRGGBB` form.
   "strategy": "core-inheritance-v4",
   "sizes": [16, 24, 32, 48, 64, 128, 256],
   "small_sizes": [16, 24, 32, 48],
+  "small_size_max": 48,
   "background": "#FFFFFF",
   "corner_radius_ratio": 0.22,
   "supersample": 4,
@@ -68,9 +70,12 @@ The CLI accepts a JSON object. Keep exact anchor colors in `#RRGGBB` form.
 
 Set `background_anchor` to the anchor name that must not receive gain. Provide per-size maps for `core_radius`, `gain_radius`, and `gain`.
 
+Set `max_size` to enable strengthening for intermediate sizes. Values not explicitly present in the maps are linearly interpolated from their nearest configured sizes; exact configured sizes remain unchanged.
+
 ```json
 {
   "sizes": [16, 24, 32, 48],
+  "max_size": 48,
   "background_anchor": "white",
   "anchors": [
     {"name": "white", "color": "#FFFFFF"},

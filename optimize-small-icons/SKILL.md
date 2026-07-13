@@ -12,7 +12,7 @@ Preserve the visual meaning of tiny features while retaining antialiased boundar
 1. Preserve the source artwork and write outputs to a separate directory during tuning.
 2. Identify the background and the exact anchor colors whose identity must survive at 16, 24, 32, and 48px.
 3. Read [references/algorithm.md](references/algorithm.md) before choosing matte layers or core inheritance thresholds.
-4. Read [references/recipe-schema.md](references/recipe-schema.md) when creating or editing the JSON recipe.
+4. Read [references/recipe-schema.md](references/recipe-schema.md) when creating or editing the JSON recipe. Read [references/platform-assets.md](references/platform-assets.md) before producing Windows, macOS, Linux, Android, or iOS release assets.
 5. Validate the invocation without writes:
 
 ```bash
@@ -29,6 +29,7 @@ python scripts/icon_resampler.py build \
 python scripts/icon_resampler.py build \
   --input logo.png \
   --config icon-recipe.json \
+  --preset windows-full \
   --output-dir icon-output \
   --json
 ```
@@ -51,6 +52,10 @@ Keep algorithm revisions internal through `--strategy`; the current strategy is 
 - `frames/<size>x<size>.png`
 
 Rerunning the same build is safe and replaces only these owned outputs. Use `--sizes` only for deliberate frame-set overrides.
+
+Use the built-in `windows-full` preset for 16/20/24/30/32/36/40/48/60/64/72/80/96/128/256px. Use `windows-minimum` only when a constrained toolchain cannot carry the full set.
+
+For multi-platform projects, expose one project command that regenerates every platform from the same canonical high-resolution source. Never make one platform consume another platform's already-resized output.
 
 ## Tuning order
 

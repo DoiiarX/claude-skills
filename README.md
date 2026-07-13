@@ -188,6 +188,8 @@ Build Windows ICO families whose tiny frames retain important semantic colors an
 - Exclusive source ownership and protected target anchors
 - Contrast-weighted one-pixel core inheritance for important components
 - Stable agent-friendly outputs: `icon.ico`, `preview.png`, `report.json`, and `frames/`
+- Built-in `windows-full` and `windows-minimum` exact-size presets
+- Cross-platform rules that always regenerate from canonical high-resolution artwork
 - Versioned internal strategy with dry-run, JSON output, layered help, and independent ICO inspection
 
 **Install:**
@@ -200,6 +202,7 @@ npx skills add DoiiarX/claude-skills@optimize-small-icons
 python scripts/icon_resampler.py build \
   --input logo.png \
   --config icon-recipe.json \
+  --preset windows-full \
   --output-dir icon-output \
   --json
 

@@ -33,6 +33,7 @@ except ModuleNotFoundError as error:
 
 BUILD_EXAMPLES = """Examples:
   python scripts/icon_resampler.py build --input logo.png --config icon-recipe.json
+  python scripts/icon_resampler.py build --input logo.png --config icon-recipe.json --preset windows-full
   python scripts/icon_resampler.py build --input logo.png --config icon-recipe.json --output-dir dist/icon --json
   python scripts/icon_resampler.py build --input logo.png --config icon-recipe.json --dry-run
 """
@@ -41,6 +42,11 @@ INSPECT_EXAMPLES = """Examples:
   python scripts/icon_resampler.py inspect --input icon-output/icon.ico
   python scripts/icon_resampler.py inspect --input icon-output/icon.ico --json
 """
+
+SIZE_PRESETS = {
+    "windows-minimum": [16, 24, 32, 48, 256],
+    "windows-full": [16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 128, 256],
+}
 
 
 class AgentArgumentParser(argparse.ArgumentParser):
@@ -92,10 +98,16 @@ def build_parser() -> AgentArgumentParser:
         default="core-inheritance-v4",
         help="versioned internal algorithm (default: core-inheritance-v4)",
     )
-    build.add_argument(
+    size_group = build.add_mutually_exclusive_group()
+    size_group.add_argument(
         "--sizes",
         type=_parse_sizes,
         help="comma-separated size override, for example 16,24,32,48,64,128,256",
+    )
+    size_group.add_argument(
+        "--preset",
+        choices=sorted(SIZE_PRESETS),
+        help="built-in Windows size set; windows-full avoids display-scale fallback",
     )
     build.add_argument("--dry-run", action="store_true", help="validate and print the plan without writing")
     build.add_argument("--json", action="store_true", help="print machine-readable JSON")
@@ -162,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
                 recipe=recipe,
                 output_dir=args.output_dir,
                 strategy=args.strategy,
-                sizes_override=args.sizes,
+                sizes_override=args.sizes or SIZE_PRESETS.get(args.preset),
                 dry_run=args.dry_run,
             )
             _print_result(result, as_json=args.json)
