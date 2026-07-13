@@ -178,6 +178,36 @@ done
 
 ---
 
+### [optimize-small-icons](./optimize-small-icons/)
+
+Build Windows ICO families whose tiny frames retain important semantic colors and disconnected details.
+
+**Features:**
+- Hue-matched matte resampling for saturated subpixel details
+- Projection-based matte layers for dark, gray, and low-chroma features
+- Exclusive source ownership and protected target anchors
+- Contrast-weighted one-pixel core inheritance for important components
+- Stable agent-friendly outputs: `icon.ico`, `preview.png`, `report.json`, and `frames/`
+- Versioned internal strategy with dry-run, JSON output, layered help, and independent ICO inspection
+
+**Install:**
+```bash
+npx skills add DoiiarX/claude-skills@optimize-small-icons
+```
+
+**Quick start:**
+```bash
+python scripts/icon_resampler.py build \
+  --input logo.png \
+  --config icon-recipe.json \
+  --output-dir icon-output \
+  --json
+
+python scripts/icon_resampler.py inspect --input icon-output/icon.ico --json
+```
+
+---
+
 ### [server-md](./server-md/)
 
 Manage a private server inventory through a compact `server-md.json` sidecar. The bundled CLI answers canonical-location, server, resource, and shortcut questions without reading long Markdown notes.

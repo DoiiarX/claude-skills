@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optimize Small Icons"
+  short_description: "Preserve semantic colors in tiny ICO frames"
+  default_prompt: "Use $optimize-small-icons to build a crisp multi-size ICO while preserving fragile semantic colors."
