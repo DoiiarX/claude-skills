@@ -21,7 +21,8 @@ Use this only when maintaining the skill or refining safety behavior. Normal loo
 
 ## Connectivity probes
 
-- `server probe` checks all available host fields (`magic_dns`, `tailnet_ip`, `public_host`, `public_ip`) before summarizing.
+- `server probe` checks all available host fields (`magic_dns`, `tailnet_ip`, `public_host`, `public_ip`) on the server's registered SSH port before summarizing.
+- A registered `proxy_command` applies to public-address connections; Tailnet preference stays direct.
 - It should collect DNS lookup, TCP/22 reachability, and optional BatchMode SSH handshake results in one output.
 - Do not stop at the first failed probe; summarize all observed failure classes together so the user does not need repeated trial-and-error.
 - Prefer the word `probe` for diagnostics; avoid adding a generic `check` command because it is ambiguous with validation/lint commands.

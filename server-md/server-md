@@ -493,12 +493,15 @@ def shortcut_host_matches(data: dict[str, Any], raw_host: Any, target: str) -> b
 def render_ssh_command(spec: dict[str, Any], prefer: str = "auto") -> str:
     user = first_value(spec, "users", "user", "root")
     target_host = None
+    use_proxy = False
     if prefer == "tailnet":
         target_host = spec.get("tailnet_ip") or spec.get("magic_dns")
     elif prefer == "public":
         target_host = spec.get("public_ip") or spec.get("public_host")
+        use_proxy = True
     else:
         target_host = spec.get("magic_dns") or spec.get("tailnet_ip") or spec.get("public_ip") or spec.get("public_host")
+        use_proxy = not bool(spec.get("magic_dns") or spec.get("tailnet_ip"))
     if not target_host:
         raise SystemExit("Server has no usable host field; set magic_dns, tailnet_ip, public_ip, or public_host.")
     parts = ["ssh"]
@@ -509,7 +512,7 @@ def render_ssh_command(spec: dict[str, Any], prefer: str = "auto") -> str:
         if identity.startswith("~"):
             identity = str(Path(identity).expanduser())
         parts += ["-i", identity]
-    if spec.get("proxy_command"):
+    if spec.get("proxy_command") and use_proxy:
         parts += ["-o", f"ProxyCommand={spec['proxy_command']}"]
     if spec.get("ssh_extra") and isinstance(spec["ssh_extra"], list):
         parts += [str(x) for x in spec["ssh_extra"]]
@@ -519,6 +522,19 @@ def render_ssh_command(spec: dict[str, Any], prefer: str = "auto") -> str:
 
 def ssh_command_parts(spec: dict[str, Any], prefer: str = "auto") -> list[str]:
     return shlex.split(render_ssh_command(spec, prefer))
+
+
+def server_ssh_port(spec: dict[str, Any]) -> int:
+    try:
+        port = int(spec.get("port") or 22)
+    except (TypeError, ValueError):
+        return 22
+    return port if 1 <= port <= 65535 else 22
+
+
+def ssh_probe_command(spec: dict[str, Any], prefer: str, timeout: int) -> list[str]:
+    command = ssh_command_parts(spec, prefer)
+    return command[:-1] + ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}", command[-1], "true"]
 
 
 def command_has_explicit_transport(command: str) -> bool:
@@ -1514,22 +1530,22 @@ def cmd_server_probe(args: argparse.Namespace) -> None:
         if value:
             hosts.append({"field": key, "host": str(value)})
     probes = []
+    port = server_ssh_port(spec)
     for item in hosts:
         host = item["host"]
         if not re.match(r"^[0-9.]+$", host):
             probes.append(run_probe(f"dns:{item['field']}", ["getent", "hosts", host], args.timeout))
-        probes.append(run_probe(f"tcp22:{item['field']}", ["bash", "-lc", f"timeout {args.timeout} bash -lc '</dev/tcp/{host}/22'"], args.timeout + 2))
+        probes.append(run_probe(f"tcp{port}:{item['field']}", ["bash", "-lc", f"timeout {args.timeout} bash -lc '</dev/tcp/{host}/{port}'"], args.timeout + 2))
     if args.ssh:
-        command = ssh_command_parts(spec, args.prefer)
-        command += ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={args.timeout}", "true"]
+        command = ssh_probe_command(spec, args.prefer, args.timeout)
         probes.append(run_probe("ssh", command, args.timeout + 5))
     summary = []
     if not hosts:
         summary.append("No host fields found; set magic_dns, tailnet_ip, public_host, or public_ip.")
     if any(p["label"].startswith("dns:") and not p.get("ok") for p in probes):
         summary.append("DNS lookup failed for at least one hostname.")
-    if hosts and not any(p["label"].startswith("tcp22:") and p.get("ok") for p in probes):
-        summary.append("No SSH port connectivity succeeded; check IP reachability, firewall, security group, or tailnet status.")
+    if hosts and not any(p["label"].startswith(f"tcp{port}:") and p.get("ok") for p in probes):
+        summary.append(f"No SSH port {port} connectivity succeeded; check IP reachability, firewall, security group, or tailnet status.")
     if args.ssh and any(p["label"] == "ssh" and not p.get("ok") for p in probes):
         summary.append("SSH handshake failed; check key path/permissions, username, host key, or publickey authorization.")
     emit({"sidecar": str(path), "name": name, "hosts": hosts, "probes": probes, "summary": summary, "ok": not summary}, args.json)

@@ -14,6 +14,9 @@ MODULE = runpy.run_path(str(Path(__file__).resolve().parents[1] / "server-md"), 
 shortcut_execution_plan = MODULE["shortcut_execution_plan"]
 cmd_shortcut_run = MODULE["cmd_shortcut_run"]
 mark_remote_local_server = MODULE["mark_remote_local_server"]
+server_ssh_port = MODULE["server_ssh_port"]
+ssh_probe_command = MODULE["ssh_probe_command"]
+render_ssh_command = MODULE["render_ssh_command"]
 
 
 def sidecar(local_server=None):
@@ -142,6 +145,24 @@ class ShortcutTargetingTests(unittest.TestCase):
 
         self.assertEqual(data["execution"]["local_server"], "prod")
         self.assertIn("execution:local_server", report["updated"])
+
+    def test_probe_uses_registered_custom_ssh_port(self):
+        spec = sidecar()["servers"]["prod"] | {"port": 44713, "proxy_command": "nc -x 127.0.0.1:10808 %h %p"}
+
+        command = ssh_probe_command(spec, "tailnet", 8)
+
+        self.assertEqual(server_ssh_port(spec), 44713)
+        self.assertEqual(command[-6:], ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "deploy@100.64.0.10", "true"])
+        self.assertIn("44713", command)
+        self.assertNotIn("ProxyCommand", " ".join(command))
+
+    def test_public_connection_keeps_registered_proxy(self):
+        spec = sidecar()["servers"]["prod"] | {"proxy_command": "nc -x 127.0.0.1:10808 %h %p"}
+
+        command = render_ssh_command(spec, "public")
+
+        self.assertIn("ProxyCommand=", command)
+        self.assertIn("prod.example.com", command)
 
 
 if __name__ == "__main__":
