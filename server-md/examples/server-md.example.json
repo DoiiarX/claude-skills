@@ -140,6 +140,7 @@
         "host": "example-prod",
         "description": "Check example production public health endpoint.",
         "command": "curl -fsS https://prod.example.com/healthz",
+        "transport": "local",
         "risk": "read-only",
         "execute_mode": "render",
         "tags": [
@@ -154,7 +155,8 @@
       "example-prod-service": {
         "host": "example-prod",
         "description": "Render a read-only service status command.",
-        "command": "ssh -i ~/.ssh/example_prod_key deploy@example-prod.tailnet.example 'systemctl status example-app --no-pager'",
+        "command": "systemctl status example-app --no-pager",
+        "transport": "auto",
         "risk": "read-only",
         "execute_mode": "render",
         "tags": [
@@ -169,7 +171,8 @@
       "restart-example-prod": {
         "host": "example-prod",
         "description": "Restart example production service after explicit confirmation.",
-        "command": "ssh -i ~/.ssh/example_prod_key deploy@example-prod.tailnet.example 'sudo systemctl restart example-app && curl -fsS http://127.0.0.1:8080/healthz'",
+        "command": "sudo systemctl restart example-app && curl -fsS http://127.0.0.1:8080/healthz",
+        "transport": "auto",
         "risk": "high",
         "execute_mode": "render",
         "confirm": true,

@@ -16,7 +16,8 @@
   "shortcuts": {},
   "execution": {
     "default_mode": "render",
-    "log": "~/.server-md/ops.jsonl"
+    "log": "~/.server-md/ops.jsonl",
+    "local_server": "example-prod"
   }
 }
 ```
@@ -28,6 +29,9 @@
 - Prefer omitting unknown optional fields instead of writing empty strings.
 - The CLI should tolerate `null`, missing values, and empty strings in existing sidecars.
 - Do not store secret values. Store paths and operational warnings only.
+- `execution.local_server` identifies the server represented by a host-scoped sidecar. Sync writes it automatically on the target. Canonical aggregate sidecars normally omit it.
+- Shortcut `host` selects the execution target. Shortcut `transport` is `auto` (default), `local`, or `ssh`; new target-host commands should not contain their own SSH prefix.
+- `transport=auto` preserves old commands beginning with `ssh` or `tailscale ssh` as legacy explicit transport so upgrades do not double-wrap them.
 - Default CLI output masks IP addresses, DNS names, host fields, connection commands, and SSH fingerprints as `__MASKED_TYPE_hash__`. The salt is generated once in the CLI install directory, so identical values map to identical tokens on the same install. Remote `stdout`/`stderr`/`output` remains readable with embedded secrets, IPs, and hosts redacted.
 
 ## Lifecycle fields
@@ -71,7 +75,7 @@ Slice validation rules:
 - `servers` may include only the target server.
 - `resources` must have `server == target`.
 - `shortcuts` must have `host == target`.
-- `inventory`, execution salts, unrelated servers, and unrelated shortcuts are not valid slice content.
+- `inventory`, execution salts, unrelated servers, and unrelated shortcuts are not valid slice content. The sync writer separately sets `execution.local_server` on the target sidecar.
 - First-version sync only supports `max_depth=1`; no recursive fan-out or child-server traversal.
 
 Write safety:

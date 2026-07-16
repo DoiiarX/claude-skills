@@ -2,7 +2,6 @@
 name: server-md
 description: >
   管理个人 SERVER.md 运维知识库。Use this skill whenever the user mentions ~/SERVER.md, SERVER.md, 服务器清单, server inventory, tailnet nodes, self-managed servers, WSL/Windows/Ubuntu host notes, or asks Claude to create, locate, update, summarize, or use a personal server runbook. It helps Claude find the canonical SERVER.md across WSL, Windows, native Ubuntu, and remote hosts; preserve progressive disclosure by splitting details into reference files; summarize local machine and managed servers without leaking secrets; and turn server notes into safe operational checklists.
-allowed-tools: Bash
 ---
 
 # SERVER.md 运维知识库 Skill
@@ -146,8 +145,8 @@ server-md resource add --name <name> --server <server> --kind project --path <pa
 ```bash
 server-md shortcut list --server <name-or-alias> --tag <topic> --status active --limit 20 --json
 server-md shortcut show --category <category> --name <name> --json
-server-md shortcut add --category health --name <name> --host <server> --command '<cmd with {{param}}>' --param param=default --risk read-only --execute-mode render --status active --traffic-role primary --json
-server-md shortcut challenge --category <category> --name <name> --json
+server-md shortcut add --category health --name <name> --host <server> --command '<target-host command with {{param}}>' --transport auto --param param=default --risk read-only --execute-mode render --status active --traffic-role primary --json
+server-md shortcut challenge --category <category> --name <name> --arg param=value --json
 server-md shortcut run --category <category> --name <name> --execute-mode auto --arg param=value
 server-md shortcut run --category <category> --name <name> --execute-mode auto --raw
 server-md shortcut run --category <category> --name <name> --execute-mode auto --raw --json
@@ -159,7 +158,11 @@ server-md shortcut run --category <category> --name <name> --confirm-code <code>
 Rules:
 - `list` and `show` only inspect records.
 - `add` writes shortcut metadata directly into `server-md.json`; do not create wrapper files/directories, clone repositories, or change CLI code just to register a shortcut.
-- A shortcut may target any registered server via `--host <server-or-alias>`; it is not limited to the local machine.
+- `shortcut.host` is executable targeting, not descriptive metadata. With `transport=auto`, `run` executes locally only when the sidecar declares/detects that host as the current machine; otherwise it builds the registered SSH connection automatically.
+- Store the command as it should run on the target host, for example `systemctl status app --no-pager`. Do not manually prepend SSH to new shortcuts.
+- `transport=local` explicitly runs on the caller even when `host` is present; use it for public HTTP checks or caller-side orchestration. `transport=ssh` always uses the registered server connection.
+- Legacy commands that already begin with `ssh` or `tailscale ssh` are executed unchanged and marked `legacy_explicit_transport`; migrate them gradually instead of wrapping them twice.
+- `shortcut challenge` and `shortcut run` resolve the same target and template arguments, so pass the same repeated `--arg` values to both.
 - Template placeholders use `{{name}}`. Register safe defaults with `shortcut add --param name=value`; override at run time with repeated `shortcut run --arg name=value`.
 - Template values are constrained to a safe character set (`letters/digits/_.:@%+=,/-`) and are substituted by the CLI, not by shell eval.
 - `run` follows the registered `execute_mode`: `render`, `manual`, or `auto`.
@@ -196,7 +199,8 @@ Rules:
 - `push` never sends the whole local sidecar to a child server; `pull` never imports unrelated remote servers.
 - Writes create `server-md.json.bak` next to the written sidecar and then atomically replace the JSON file.
 - Conflicts default to `fail`; use `--conflict local|remote|newer|merge` only when the desired winner is clear.
-- Remote commands are wrapped in `bash -lc` so a fish default shell does not parse bash syntax.
+- Remote commands, including host-targeted shortcuts, are wrapped in `bash -lc` so a fish default shell does not parse bash syntax.
+- Successful push/bidirectional sync writes `execution.local_server=<target>` into the host-scoped sidecar. This prevents a target host from SSHing back into itself.
 - Use repeated `--server` to sync selected servers only; do not use sync as a broadcast mechanism.
 
 ### inventory

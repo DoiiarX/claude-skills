@@ -30,8 +30,11 @@ Use this only when maintaining the skill or refining safety behavior. Normal loo
 
 - `shortcut list` and `shortcut show` only inspect records.
 - `shortcut run` follows the registered `execute_mode` and appends masked JSONL events to `execution.log`.
+- `shortcut.host` controls execution placement. Write commands in target-host form; `transport=auto` chooses local execution on the target sidecar and SSH elsewhere.
+- Use `transport=local` only when the command intentionally belongs to the caller. Use `transport=ssh` to force the registered SSH connection.
+- Existing explicit SSH commands remain compatible but are logged as `legacy_explicit_transport`; migrate them to target-host commands when touched.
 - Use `server-md log path --json` to find the log path and `server-md log tail --limit 20 --json` to inspect recent events.
-- `risk=medium/high` or `confirm=true` requires `shortcut challenge`; the user must provide the confirmation code.
+- `risk=medium/high` or `confirm=true` requires `shortcut challenge`; use the same `--arg` and `--prefer` values for challenge and run, then have the user provide the confirmation code.
 - Without explicit authorization, render commands instead of executing remote operations.
 
 ## Sync workflow
@@ -51,6 +54,7 @@ Use sync only when the user wants sidecar data exchanged between the main CLI an
 5. Conflicts default to `fail`; do not use `local`, `remote`, `newer`, or `merge` unless the desired winner is clear.
 6. Successful writes create `server-md.json.bak` next to the written sidecar and use atomic replacement.
 7. Remote commands must run through `bash -lc` because some hosts use fish as the login shell.
+8. A successful push or bidirectional sync records `execution.local_server` in the remote host-scoped sidecar.
 
 ## Secret safety
 

@@ -13,6 +13,7 @@ import platform
 import re
 import secrets
 import shlex
+import socket
 import subprocess
 import sys
 import time
@@ -346,7 +347,8 @@ def append_jsonl(path_raw: str, event: dict[str, Any]) -> None:
     path = Path(path_raw).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     event = {"ts": _dt.datetime.now(_dt.timezone.utc).isoformat(), **event}
-    path.open("a", encoding="utf-8").write(json.dumps(mask_data(event), ensure_ascii=False) + "\n")
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(mask_data(event), ensure_ascii=False) + "\n")
 
 
 def shortcut_requires_confirmation(spec: dict[str, Any]) -> bool:
@@ -503,7 +505,10 @@ def render_ssh_command(spec: dict[str, Any], prefer: str = "auto") -> str:
     if spec.get("port"):
         parts += ["-p", str(spec["port"])]
     if spec.get("identity"):
-        parts += ["-i", str(spec["identity"])]
+        identity = str(spec["identity"])
+        if identity.startswith("~"):
+            identity = str(Path(identity).expanduser())
+        parts += ["-i", identity]
     if spec.get("proxy_command"):
         parts += ["-o", f"ProxyCommand={spec['proxy_command']}"]
     if spec.get("ssh_extra") and isinstance(spec["ssh_extra"], list):
@@ -514,6 +519,112 @@ def render_ssh_command(spec: dict[str, Any], prefer: str = "auto") -> str:
 
 def ssh_command_parts(spec: dict[str, Any], prefer: str = "auto") -> list[str]:
     return shlex.split(render_ssh_command(spec, prefer))
+
+
+def command_has_explicit_transport(command: str) -> bool:
+    try:
+        parts = shlex.split(command, posix=platform.system() != "Windows")
+    except ValueError:
+        return False
+    if not parts:
+        return False
+    executable = Path(parts[0]).name.lower()
+    if executable in {"ssh", "ssh.exe"}:
+        return True
+    return executable in {"tailscale", "tailscale.exe"} and len(parts) > 1 and parts[1].lower() == "ssh"
+
+
+def local_machine_addresses() -> set[str]:
+    addresses = {"127.0.0.1", "::1"}
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            addresses.add(str(info[4][0]).split("%", 1)[0])
+    except OSError:
+        pass
+    if platform.system() != "Windows":
+        try:
+            completed = subprocess.run(["hostname", "-I"], text=True, capture_output=True, timeout=3)
+            if completed.returncode == 0:
+                addresses.update(completed.stdout.split())
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return addresses
+
+
+def server_matches_local_machine(data: dict[str, Any], name: str, spec: dict[str, Any]) -> bool:
+    execution = ensure_execution_config(data)
+    declared = canonical_server_ref(data, execution.get("local_server"))
+    if declared:
+        return declared == name
+
+    node = platform.node().lower().split(".", 1)[0]
+    names = {name.lower().split(".", 1)[0]}
+    aliases = spec.get("aliases", [])
+    if isinstance(aliases, list):
+        names.update(str(alias).lower().split(".", 1)[0] for alias in aliases)
+    for key in ("magic_dns", "public_host"):
+        value = spec.get(key)
+        if value:
+            names.add(str(value).lower().split(".", 1)[0])
+    if node and node in names:
+        return True
+
+    addresses = local_machine_addresses()
+    for key in ("tailnet_ip", "public_ip"):
+        value = spec.get(key)
+        if value and str(value).split("%", 1)[0] in addresses:
+            return True
+    return False
+
+
+def shortcut_execution_plan(
+    data: dict[str, Any],
+    spec: dict[str, Any],
+    command: str,
+    prefer: str = "auto",
+) -> dict[str, Any]:
+    raw_host = spec.get("host")
+    transport = str(spec.get("transport") or "auto")
+    if transport not in {"auto", "local", "ssh"}:
+        raise SystemExit(f"Invalid shortcut transport: {transport!r}. Expected auto, local, or ssh.")
+    if not raw_host or transport == "local":
+        return {
+            "transport": "local",
+            "target": canonical_server_ref(data, raw_host),
+            "command": command,
+            "argv": None,
+            "legacy_explicit_transport": False,
+        }
+
+    name, server = find_server(data, str(raw_host))
+    if not name or not server:
+        raise SystemExit(f"Shortcut host is not registered: {raw_host!r}. Register it with server register or set transport=local.")
+
+    if transport == "auto" and command_has_explicit_transport(command):
+        return {
+            "transport": "local",
+            "target": name,
+            "command": command,
+            "argv": None,
+            "legacy_explicit_transport": True,
+        }
+    if transport == "auto" and server_matches_local_machine(data, name, server):
+        return {
+            "transport": "local",
+            "target": name,
+            "command": command,
+            "argv": None,
+            "legacy_explicit_transport": False,
+        }
+
+    argv = ssh_command_parts(server, prefer) + [remote_command(command)]
+    return {
+        "transport": "ssh",
+        "target": name,
+        "command": shlex.join(argv),
+        "argv": argv,
+        "legacy_explicit_transport": False,
+    }
 
 
 def sidecar_priority(data: dict[str, Any] | None, role: str) -> int:
@@ -1466,6 +1577,7 @@ def cmd_shortcut_add(args: argparse.Namespace) -> None:
         "description": args.description or "",
         "command": args.command,
         "host": args.host,
+        "transport": args.transport,
         "risk": args.risk,
         "execute_mode": args.execute_mode,
         "warnings": args.warning or [],
@@ -1501,7 +1613,9 @@ def cmd_shortcut_challenge(args: argparse.Namespace) -> None:
     if not spec:
         raise SystemExit(f"Shortcut not found: {args.category}/{args.name}")
     execution = ensure_execution_config(data)
-    command = str(spec.get("command", ""))
+    raw_command = render_shortcut_command(spec, args.arg)
+    plan = shortcut_execution_plan(data, spec, raw_command, args.prefer)
+    command = str(plan["command"])
     code = confirmation_code(str(execution.get("confirm_salt", "")), args.category, args.name, command)
     emit({
         "sidecar": str(path),
@@ -1509,6 +1623,8 @@ def cmd_shortcut_challenge(args: argparse.Namespace) -> None:
         "name": args.name,
         "risk": spec.get("risk", "read-only"),
         "command_hash": command_hash(command),
+        "target": plan.get("target"),
+        "transport": plan.get("transport"),
         "confirm_code": code,
         "validity": "TOTP-style 30-second window; current step is accepted, and run allows one previous step for typing delay.",
         "expires_in_seconds": 30 - (int(time.time()) % 30),
@@ -1523,7 +1639,9 @@ def cmd_shortcut_run(args: argparse.Namespace) -> None:
     if not spec:
         raise SystemExit(f"Shortcut not found: {args.category}/{args.name}. Try: server-md shortcut list --category {args.category} --json")
     execution = ensure_execution_config(data)
-    command = render_shortcut_command(spec, args.arg)
+    raw_command = render_shortcut_command(spec, args.arg)
+    plan = shortcut_execution_plan(data, spec, raw_command, args.prefer)
+    command = str(plan["command"])
     mode = args.execute_mode or str(spec.get("execute_mode") or execution.get("default_mode") or "render")
     risk = str(spec.get("risk", "read-only"))
     log_path = args.log or str(execution.get("log", "~/.server-md/ops.jsonl"))
@@ -1533,6 +1651,9 @@ def cmd_shortcut_run(args: argparse.Namespace) -> None:
         "category": args.category,
         "name": args.name,
         "host": spec.get("host"),
+        "target": plan.get("target"),
+        "transport": plan.get("transport"),
+        "legacy_explicit_transport": plan.get("legacy_explicit_transport", False),
         "risk": risk,
         "execute_mode": mode,
         "command_hash": command_hash(command),
@@ -1555,7 +1676,10 @@ def cmd_shortcut_run(args: argparse.Namespace) -> None:
             }, args.json)
             sys.exit(2)
     append_jsonl(log_path, {**base_event, "outcome": "started"})
-    completed = subprocess.run(command, shell=True, text=True, capture_output=True, timeout=args.timeout)
+    if plan.get("argv"):
+        completed = subprocess.run(plan["argv"], shell=False, text=True, capture_output=True, timeout=args.timeout)
+    else:
+        completed = subprocess.run(raw_command, shell=True, text=True, capture_output=True, timeout=args.timeout)
     append_jsonl(log_path, {**base_event, "outcome": "completed", "returncode": completed.returncode})
     stdout = completed.stdout[-args.output_limit:]
     stderr = completed.stderr[-args.output_limit:]
@@ -1591,6 +1715,9 @@ def emit_detail_text(data: dict[str, Any]) -> None:
     print(f"category={masked.get('category')}")
     print(f"name={masked.get('name')}")
     print(f"host={masked.get('host')}")
+    print(f"target={masked.get('target')}")
+    print(f"transport={masked.get('transport')}")
+    print(f"legacy_explicit_transport={masked.get('legacy_explicit_transport')}")
     print(f"risk={masked.get('risk')}")
     print(f"execute_mode={masked.get('execute_mode')}")
     print(f"executed={masked.get('executed')}")
@@ -1810,6 +1937,13 @@ def cmd_sync_pull(args: argparse.Namespace) -> None:
     emit({"operation": "pull", "local_sidecar": str(path), "write": write, "targets": reports, "ok": True}, args.json)
 
 
+def mark_remote_local_server(data: dict[str, Any], target: str, report: dict[str, Any]) -> None:
+    execution = ensure_execution_config(data)
+    if execution.get("local_server") != target:
+        execution["local_server"] = target
+        report.setdefault("updated", []).append("execution:local_server")
+
+
 def cmd_sync_push(args: argparse.Namespace) -> None:
     scopes = validate_sync_args(args)
     path = resolve_sidecar_path(args.sidecar)
@@ -1819,6 +1953,7 @@ def cmd_sync_push(args: argparse.Namespace) -> None:
     for target in targets:
         info = sync_target_report(args, local_data, target, scopes)
         remote_next, report = apply_server_slice(info["_remote_data"], info["_local_slice"], target["name"], scopes, args.tag, args.conflict)
+        mark_remote_local_server(remote_next, target["name"], report)
         item = {**strip_internal_sync_report(info), "changes": report, "would_write_remote": report_has_changes(report)}
         if report_has_errors(report):
             reports.append(item)
@@ -1842,6 +1977,7 @@ def cmd_sync_bidir(args: argparse.Namespace) -> None:
         info = sync_target_report(args, local_next, target, scopes)
         local_merged, pull_report = apply_server_slice(local_next, info["_remote_slice"], target["name"], scopes, args.tag, args.conflict)
         remote_merged, push_report = apply_server_slice(info["_remote_data"], info["_local_slice"], target["name"], scopes, args.tag, args.conflict)
+        mark_remote_local_server(remote_merged, target["name"], push_report)
         item = {**strip_internal_sync_report(info), "pull_changes": pull_report, "push_changes": push_report, "would_write_local": report_has_changes(pull_report), "would_write_remote": report_has_changes(push_report)}
         reports.append(item)
         if report_has_errors(pull_report) or report_has_errors(push_report):
@@ -2140,7 +2276,7 @@ def build_parser() -> argparse.ArgumentParser:
     srv_probe.add_argument("--json", action="store_true", help="Emit JSON.")
     srv_probe.set_defaults(func=cmd_server_probe)
 
-    sc = sub.add_parser("shortcut", help="Manage registered server shortcut commands in server-md.json; never executes them.")
+    sc = sub.add_parser("shortcut", help="Manage and safely execute registered server shortcuts with host-aware targeting.")
     sc_sub = sc.add_subparsers(dest="shortcut_cmd", required=True)
 
     sc_list = sc_sub.add_parser("list", help="List registered shortcuts with limit and filters.")
@@ -2165,9 +2301,10 @@ def build_parser() -> argparse.ArgumentParser:
     sc_add.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
     sc_add.add_argument("--category", required=True, help="Category, e.g. health, logs, deploy, tunnel.")
     sc_add.add_argument("--name", required=True, help="Unique shortcut name inside the category.")
-    sc_add.add_argument("--command", required=True, help="Command template to register; never executed by this CLI.")
+    sc_add.add_argument("--command", required=True, help="Command template as it should run on the target host.")
     sc_add.add_argument("--description")
     sc_add.add_argument("--host")
+    sc_add.add_argument("--transport", choices=["auto", "local", "ssh"], default="auto", help="Execution transport. auto uses host-aware local/SSH targeting and preserves legacy explicit SSH commands.")
     sc_add.add_argument("--risk", choices=["read-only", "low", "medium", "high"], default="read-only")
     sc_add.add_argument("--execute-mode", choices=["render", "manual", "auto"], default="render", help="Whether shortcut run renders only, requires manual copy, or may execute.")
     sc_add.add_argument("--warning", action="append", help="Shortcut warning; repeatable.")
@@ -2187,6 +2324,8 @@ def build_parser() -> argparse.ArgumentParser:
     sc_ch.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
     sc_ch.add_argument("--category", required=True)
     sc_ch.add_argument("--name", required=True)
+    sc_ch.add_argument("--prefer", choices=["auto", "tailnet", "public"], default="auto", help="Preferred address when the shortcut targets a remote server.")
+    sc_ch.add_argument("--arg", action="append", help="Template parameter key=value; must match the arguments used for shortcut run.")
     sc_ch.add_argument("--json", action="store_true", help="Emit JSON.")
     sc_ch.set_defaults(func=cmd_shortcut_challenge)
 
@@ -2194,6 +2333,7 @@ def build_parser() -> argparse.ArgumentParser:
     sc_run.add_argument("--sidecar", help="server-md.json path; defaults to canonical sidecar.")
     sc_run.add_argument("--category", required=True)
     sc_run.add_argument("--name", required=True)
+    sc_run.add_argument("--prefer", choices=["auto", "tailnet", "public"], default="auto", help="Preferred address when the shortcut targets a remote server.")
     sc_run.add_argument("--execute-mode", choices=["render", "manual", "auto"], help="Override registered execute_mode for this invocation.")
     sc_run.add_argument("--confirm-code", help="Required for risk=medium/high or confirm=true shortcuts when executing.")
     sc_run.add_argument("--log", help="JSONL log path; defaults to execution.log in sidecar.")
