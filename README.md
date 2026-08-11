@@ -4,6 +4,30 @@ A collection of Claude Code skills for extending agent capabilities.
 
 ## Skills
 
+### [command-resource-profiler](./command-resource-profiler/)
+
+Run a command under process-tree monitoring and report application-scoped CPU time, average CPU utilization, peak RSS/VMS memory, disk I/O, wall time, exit code, and optional interval samples. Unrelated system processes are excluded.
+
+**Features:**
+- **Process-tree scope** — follow the launched command and discovered descendants
+- **CPU and memory metrics** — total CPU time, two CPU percentage conventions, peak RSS/VMS
+- **Runtime and I/O** — wall time, exit code, disk reads/writes, process counts
+- **Repeatable tests** — warmups, repetitions, JSON summary, and CSV interval samples
+- **Cross-platform** — Windows, macOS, and Linux through Python and `psutil`
+
+**Install:**
+```bash
+npx skills add DoiiarX/claude-skills@command-resource-profiler
+```
+
+**Quick start:**
+```bash
+python scripts/profile_command.py \
+  --warmup 1 --repeat 3 --interval 0.1 \
+  --output profile.json --samples-output samples.csv -- \
+  your-command arg1 arg2
+```
+
 ### [json-flat-tool](./json-flat-tool/)
 
 A single-script tool (`jstool.py`) for viewing, inspecting, and editing JSON data.

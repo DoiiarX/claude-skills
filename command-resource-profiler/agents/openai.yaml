@@ -1,0 +1,4 @@
+interface:
+  display_name: "Command Resource Profiler"
+  short_description: "Profile command process-tree CPU, memory, I/O, and runtime"
+  default_prompt: "Use $command-resource-profiler to run a command under process-tree CPU and memory monitoring and produce a report."
